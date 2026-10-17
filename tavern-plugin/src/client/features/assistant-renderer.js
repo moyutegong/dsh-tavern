@@ -230,19 +230,41 @@
 		}
 
 		// gallery: { urls, index } pages through several pictures with ‹ › and the arrow keys.
-		function openSceneImagePreview(url, opener, version, onEditPrompt, gallery) {
+		function openSceneImagePreview(url, opener, version, onEditPrompt, gallery, label) {
 			const dialog = document.createElement("dialog");
-			dialog.className = "dsh-tavern-image-preview";
-			dialog.setAttribute("aria-label", "场景插画预览");
+			// A labelled picture (an avatar) is shown at a moderate size, not stretched to the screen.
+			dialog.className = "dsh-tavern-image-preview" + (label ? " is-compact" : "");
+			dialog.setAttribute("aria-label", (label || "场景插画") + "预览");
 			const close = document.createElement("button");
 			close.type = "button";
 			close.textContent = "缩小并返回 ×";
 			close.setAttribute("aria-label", "缩小并返回");
 			const image = document.createElement("img");
 			image.src = url;
-			image.alt = "放大的场景插画";
-			close.addEventListener("click", function () { dialog.close(); });
-			dialog.addEventListener("click", function (event) { if (event.target === dialog) dialog.close(); });
+			image.alt = "放大的" + (label || "场景插画");
+			// An avatar grows out of the one clicked and shrinks back into it when closed.
+			const grow = Boolean(label && opener && typeof image.animate === "function" && !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches));
+			function origin() {
+				const from = opener.getBoundingClientRect(), to = image.getBoundingClientRect();
+				if (!from.width || !to.width) return "";
+				return "translate(" + (from.left + from.width / 2 - to.left - to.width / 2) + "px, " + (from.top + from.height / 2 - to.top - to.height / 2) + "px) scale(" + from.width / to.width + ")";
+			}
+			function dismiss() {
+				const start = grow && opener.isConnected && !dialog.dataset.closing ? origin() : "";
+				if (!start) { dialog.close(); return; }
+				dialog.dataset.closing = "1";
+				// The timer closes it even where animations do not run (a hidden tab).
+				const done = function () { if (dialog.open) dialog.close(); };
+				image.animate([{ transform: "none", opacity: 1 }, { transform: start, opacity: 0.4 }], { duration: 180, easing: "cubic-bezier(.4, 0, 1, 1)", fill: "forwards" }).finished.then(done, done);
+				window.setTimeout(done, 240);
+			}
+			if (grow) {
+				dialog.addEventListener("cancel", function (event) { event.preventDefault(); dismiss(); });
+				const play = function () { const start = origin(); if (start) image.animate([{ transform: start, opacity: 0.4 }, { transform: "none", opacity: 1 }], { duration: 260, easing: "cubic-bezier(.2, .8, .2, 1)" }); };
+				image.addEventListener("load", play, { once: true });
+			}
+			close.addEventListener("click", dismiss);
+			dialog.addEventListener("click", function (event) { if (event.target === dialog) dismiss(); });
 			dialog.addEventListener("close", function () { dialog.remove(); if (opener && opener.isConnected) opener.focus(); }, { once: true });
 			dialog.append(close, image);
 			const urls = gallery && gallery.urls || [];
@@ -629,7 +651,7 @@
 				const pluginMedia = useTavernPluginMedia(props.sessionId, storyTurn, playView && settled);
 				const castLines = useTavernCast(props.sessionId, storyTurn, playView && settled);
 				const castCard = liveState.view && liveState.view.card;
-				const cast = castLines ? { sessionId: props.sessionId, lines: castLines, characterName: castCard && castCard.name || "",
+				const cast = castLines ? { sessionId: props.sessionId, lines: castLines, characters: tavernCastStore.characters(props.sessionId), characterName: castCard && castCard.name || "",
 					characterImageUrl: castCard && castCard.path ? "/api/dsh-tavern/card-image?path=" + encodeURIComponent(castCard.path) : "" } : null;
 				const sceneImagesEnabled = Boolean(liveState.view && liveState.view.releaseCapabilities && liveState.view.releaseCapabilities.sceneImages);
 				const sceneShown = sceneImagesEnabled && settled && playView;

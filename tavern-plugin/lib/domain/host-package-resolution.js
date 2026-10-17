@@ -15,8 +15,8 @@
 //     两个方向的导出引用全等（differingClassExports 为空）。
 // 所以这里只把 asar 宿主根排到解析候选的第一位，插件闭包退回最后一位 —— 不引入第二份
 // dsh-session，也不产生双份会话状态。
-import { createRequire } from 'node:module'
 import { realpathSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -26,16 +26,15 @@ const HOST_RUNTIME_DIRECTORY = 'dsh'
 // 运行期只依赖文件名与顶层入口的约定，不依赖 -e 片段的进程身份：宿主把这两个变量注入
 // Electron Node 子进程（lib/main.js 的 desktopNodeEnvironment），而脱离态由系统 Node 跑时
 // 退回 process.argv[1]。
+// CLI 安装的入口是 runtime/bin/dsh，一个指向 runtime/lib/node_modules/@deepseek-ai/dsh/lib/bin.js
+// 的无扩展名链接；从链接所在目录出发解析不到 runtime/lib/node_modules，所以先跟到真实文件。
 export function desktopLauncherEntry({ env = process.env, argv = process.argv } = {}) {
   for (const candidate of [env.DSH_DESKTOP_DSH_BOOTSTRAP, env.DSH_DESKTOP_NODE_EXECUTABLE, argv[1]]) {
-    if (typeof candidate !== 'string') continue
-    // CLI 的 runtime/bin/dsh 是无扩展名链接；从其真实入口解析才会命中宿主闭包。
-    // 保留归档宿主原路径，避免改变 Electron 的 asar 锚点优先级。
+    if (typeof candidate !== 'string' || !candidate) continue
     if (/\.(?:c|m)?js$/i.test(candidate)) return candidate
-    try {
-      const entry = realpathSync(candidate)
-      if (/\.(?:c|m)?js$/i.test(entry)) return entry
-    } catch {}
+    let real = ''
+    try { real = realpathSync(candidate) } catch {}
+    if (/\.(?:c|m)?js$/i.test(real)) return real
   }
   return ''
 }

@@ -21,7 +21,9 @@ import { backgroundLifecycleChecks } from './background-lifecycle.mjs'
 import { cardMemoryChecks } from './card-memory.mjs'
 import {displayRegressionRules, displayRegressionChecks} from './display-regression.mjs'
 import { surfaceRecoveryChecks } from './surface-recovery.mjs'
-import { castCardFileChecks, castSpeechChecks, castStageChecks, castStageInputChecks } from './cast-stage.mjs'
+import { stringify as stringifyYaml } from 'yaml'
+import { applySidebarDefaults } from '../../bin/launcher-settings.mjs'
+import { castCardFileChecks, castSpeechChecks, castStageChecks, castStageInputChecks, dshCardPlayChecks } from './cast-stage.mjs'
 import { cardVariableUpdateChecks } from './card-variable-update.mjs'
 import { cardUpdateChecks } from './card-update.mjs'
 import { sidebarUpgrade } from './sidebar-upgrade.mjs'
@@ -173,6 +175,8 @@ try {
     }
     await writeFile(join(profile, 'package.json'), JSON.stringify({ name: 'tavern-e2e', private: true,
       dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-web-mobile', 'dsh-better-sidebar', 'dsh-tavern-plugin', 'dsh-tavern-remote'] } } }))
+    // The stage scenario runs with the sidebar a real install gets (no Tasks tab), as players see it.
+    if (castScenario) await writeFile(join(root, 'settings.yaml'), stringifyYaml(applySidebarDefaults({})))
     await writeFile(join(profile, 'cordis.patch.yml'), `- id: agent-default-model\n  config:\n    provider: tavern-e2e\n    model: fixed\n- insert:\n    - id: tavern-e2e-model\n      name: ${JSON.stringify(join(source, 'tests/e2e/model.mjs'))}\n`)
     await mkdir(join(data, 'resources/presets'), { recursive: true })
     for (const key of ['A', 'B']) await writeFile(join(data, `resources/presets/E2E-${key}.json`), JSON.stringify({
@@ -506,6 +510,9 @@ try {
     await toggle.click()
     await page.getByText('已保存，所有游戏下一轮生效').waitFor()
     assert.equal(await toggle.isChecked(), true)
+    // The stage is per card and off for ordinary cards; this card turns it on.
+    const stage = await page.evaluate(async () => (await fetch('/api/dsh-tavern/setCardStage', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ path: 'cards/e2e.json', enabled: true }) })).json())
+    assert.equal(stage.enabled, true)
     await page.goto(chatUrl)
     await page.getByRole('textbox', { name: /发消息|Message/ }).waitFor()
   })
@@ -545,7 +552,7 @@ try {
   })
   if (castScenario) await castStageChecks({ page, step, output, report })
   if (castScenario) await castSpeechChecks({ page, step, output, report })
-  if (castScenario) await castCardFileChecks({ page, step, report })
+  if (castScenario) await castCardFileChecks({ page, step, report, savedChat })
   await step('刷新后确认同一局、正文和状态均保留', async () => {
     await page.reload({ waitUntil: 'domcontentloaded' })
     await inspectScreen()
@@ -875,6 +882,7 @@ try {
     report.nativeFormat.restart=true
   })
   if (castScenario) await castStageInputChecks({ page, step, report })
+  if (castScenario) await dshCardPlayChecks({ page, step, output, report })
   // Every scenario ends with the story save agreeing with what the model sees (#196).
   if (storyToolScenario) await step('正文均经 submit_story 提交', async () => {
     const submitted = (await readFile(join(output, 'story-tool.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line).content)

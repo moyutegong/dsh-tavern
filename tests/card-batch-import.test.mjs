@@ -7,10 +7,13 @@ const body = source.slice(start, source.indexOf('async function renameCard()', s
 function setup() {
   const state = { status: '', error: '', calls: [], loads: [], refreshes: 0 }
   const importing = { current: false }
-  const run = new Function('busy', 'importing', 'setBusy', 'setError', 'setImportStatus', 'rpc', 'parseCardFile', 'notifyTavernDataChanged', 'refreshCards', 'loadCard', body + '; return importCardFiles;')(
+  const rpc = async (_, { payload }) => { state.calls.push(payload.name); if (payload.name === 'bad.json') throw new Error('invalid card'); return { card: { path: payload.name } } }
+  const parseCardFile = async file => file
+  const run = new Function('busy', 'importing', 'setBusy', 'setError', 'setImportStatus', 'rpc', 'parseCardFile', 'notifyTavernDataChanged', 'refreshCards', 'loadCard',
+    'importTavernCardFile', 'tavernCardAssetNotice', body + '; return importCardFiles;')(
     false, importing, value => { state.busy = value }, value => { state.error = value }, value => { state.status = value },
-    async (_, { payload }) => { state.calls.push(payload.name); if (payload.name === 'bad.json') throw new Error('invalid card'); return { card: { path: payload.name } } },
-    async file => file, () => {}, async () => { state.refreshes++ }, async path => { state.loads.push(path) })
+    rpc, parseCardFile, () => {}, async () => { state.refreshes++ }, async path => { state.loads.push(path) },
+    async (file, call) => call('importCard', { payload: await parseCardFile(file) }), () => '')
   return { state, run, importing }
 }
 

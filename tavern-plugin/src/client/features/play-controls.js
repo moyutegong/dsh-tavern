@@ -317,6 +317,7 @@
 					h("div", { className: "dsh-tavern-status-settle" }, h("span", { className: "dsh-tavern-status-dot " + (view.settleStatus || "idle") }), statusText)
 				),
 					h("div", { className: "dsh-tavern-status-body" },
+                        props.submitStage ? h(TavernStageSection, { sessionId: props.sessionId, submit: props.submitStage, generating: running }) : null,
                         h(TavernBackgroundWait, {sessionId:props.sessionId, activity:view.activity}),
                         h(TavernSaveUpgrade, {key:props.sessionId,sessionId:props.sessionId,busy:running || view.activity?.busy || view.settleStatus === "running"}),
 					["story", "script"].includes(view.mode || "story") && view.requestMode !== "sillytavern" && view.cardUpdate ? h("section", { className: "dsh-tavern-status-section" },
@@ -458,7 +459,7 @@
 					function () { return selector(chat.getSnapshot()); }
 				);
 			}
-			return h(TavernStatusPanel, { sessionId: props.sessionId, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab });
+			return h(TavernStatusPanel, { sessionId: props.sessionId, useSession: useSession, useChat: useChat, executeSlash: props.executeSlash, openStyleTab: props.openStyleTab, submitStage: props.submitStage });
 		}
 
 		const candidatePanel = { value: null, listeners: new Set() };
@@ -904,7 +905,14 @@
                 catch (err) { setError(String(err.message || err)); }
                 finally { setBusy(false); }
             }
-            if (!data || (!data.plugins.length && !data.errors.length)) return error ? h("p", { role: "alert" }, "插件信息读取失败：" + error) : null;
+            const pluginSettings = data && data.settings || [];
+            const settingsBlock = pluginSettings.map(entry => h("section", { key: entry.plugin, className: "dsh-local-section dsh-tavern-plugin-settings", "aria-label": entry.title },
+                h("h3", null, entry.title),
+                entry.fields.map(field => h(TavernPluginSettingField, { key: field.key, field: field, value: entry.values[field.key], busy: busy,
+                    onChange: value => change({ setting: { plugin: entry.plugin, key: field.key, value: value } }) }))));
+            // The options plugins add sit with the game's own settings; the switches stay under 高级.
+            if (props.part === "settings") return pluginSettings.length ? h(React.Fragment, null, settingsBlock, error ? h("p", { role: "alert" }, "保存失败：" + error) : null) : null;
+            if (!data || (!data.plugins.length && !data.errors.length && !(data.tasks && data.tasks.settlement.length))) return error ? h("p", { role: "alert" }, "插件信息读取失败：" + error) : null;
             const usesText = uses => uses.map(item => item.stage + "·" + item.mode).join("、");
             const settlementTasks = data.tasks ? data.tasks.settlement : [];
             // Swap with the neighbour in the same phase; the whole order is saved, so it holds for new tasks too.
@@ -942,6 +950,33 @@
                         new Date(item.at).toLocaleTimeString() + " · " + item.plugin + " · " + item.stage + "：" + item.message)),
                     h("button", { type: "button", className: "dsh-tavern-btn", onClick: load }, "刷新")) : null,
                 error ? h("p", { role: "alert" }, "保存失败：" + error) : null);
+        }
+
+        // One option a plugin added to this game's settings (tavern.gameSettings), drawn like Tavern's own.
+        function TavernPluginSettingField(props) {
+            const h = React.createElement;
+            const field = props.field;
+            const [draft, setDraft] = React.useState(String(props.value ?? ""));
+            React.useEffect(() => { setDraft(String(props.value ?? "")); }, [props.value]);
+            const description = field.description ? h("span", { className: "dsh-tavern-settings-desc" }, field.description) : null;
+            if (field.type === "boolean") return h("label", { className: "dsh-tavern-background-task" },
+                h("span", null, field.label, description),
+                h("input", { type: "checkbox", role: "switch", "aria-label": field.label, checked: props.value === true, disabled: props.busy, onChange: event => props.onChange(event.target.checked) }));
+            if (field.type === "select") return h("div", { className: "dsh-local-field" },
+                h("label", null, field.label, h("select", { className: "dsh-tavern-settings-select", "aria-label": field.label, value: props.value, disabled: props.busy, onChange: event => props.onChange(event.target.value) },
+                    field.options.map(option => h("option", { key: option.value, value: option.value }, option.label)))),
+                field.description ? h("p", { className: "dsh-local-help" }, field.description) : null);
+            // Numbers and text are saved when the field loses focus or on Enter.
+            function commit() {
+                const value = field.type === "number" ? Number(draft) : draft;
+                if (field.type === "number" && (draft.trim() === "" || !Number.isFinite(value))) { setDraft(String(props.value ?? "")); return; }
+                if (value !== props.value) props.onChange(value);
+            }
+            return h("div", { className: "dsh-local-field" },
+                h("label", null, field.label, h("input", { className: "dsh-tavern-settings-select", "aria-label": field.label, disabled: props.busy, value: draft,
+                    type: field.type === "number" ? "number" : "text", min: field.min, max: field.max, step: field.step, maxLength: field.maxLength,
+                    onChange: event => setDraft(event.target.value), onBlur: commit, onKeyDown: event => { if (event.key === "Enter") commit(); } })),
+                field.description ? h("p", { className: "dsh-local-help" }, field.description) : null);
         }
 
         // Manual plugin tasks (tavern.manualTask): one button each, run as an exclusive background task.
@@ -1000,21 +1035,10 @@
                         h(UserPreferenceProfileTab, { key: owner + ":profile", scope: { sessionId: owner }, conversationOnly: true }),
                         h(TavernStatusBarSetting, { key: owner + ":status", sessionId: owner })),
                     h(TavernConversationBackgroundModel, { key: owner, sessionId: owner }),
+                    h(TavernConversationPlugins, { key: owner + ":plugin-settings", sessionId: owner, part: "settings" }),
                     h("details", { className: "dsh-local-advanced" }, h("summary", null, "高级"),
                         h(TavernConversationWritingSkills, { key: owner + ":skills", sessionId: owner }),
                         h(TavernConversationPlugins, { key: owner + ":plugins", sessionId: owner }))) : h("p", null, "请选择一个游玩对话。")));
-        }
-
-        function TavernStageAction(props) {
-            const owner = props.sessions.subagentAddress(props.sessionId)?.parentSessionId || props.sessionId;
-            const mode = useTavernSessionMode(owner);
-            const enabled = useTavernCastEnabled();
-            if (!enabled || !isPlayMode(mode)) return null;
-            return React.createElement("button", { type: "button", className: "dsh-tavern-btn dsh-tavern-header-settings", "aria-label": "舞台", title: "打开舞台", onClick: () => props.open(owner) },
-                React.createElement("svg", { width: 18, height: 18, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
-                    React.createElement("path", { d: "M3 5h18v11H3zM8 20h8M12 16v4" }),
-                    React.createElement("circle", { cx: 12, cy: 10, r: 2.5 })),
-                React.createElement("span", { className: "dsh-tavern-header-action-label" }, "舞台"));
         }
 
         function TavernConversationSettingsAction(props) {
@@ -1547,7 +1571,7 @@
 			const slots = input.slots;
 			const uiConversation = ctx.get("uiConversation") || ctx.get("conversation");
 			const executeSlash = createTavernFrameSlashExecutor(ctx);
-            // The stage: another view of the same game, in the right panel (docs/design/cast-presentation.md).
+            // The stage: another view of the same game, at the top of 酒馆状态 (docs/design/cast-presentation.md).
             const submitTavernStageInput = function (sessionId, text) {
                 const scope = ctx.sessions.scope(sessionId);
                 const conversation = ctx.get("conversation");
@@ -1556,14 +1580,6 @@
                 input.setDraft(text);
                 return Promise.resolve(input.submit("queue"));
             };
-            ctx.effect(() => ctx.betterSidebar.registerTab({
-                id: "dsh-tavern:stage", title: "舞台", order: 7, single: true,
-                component: props => React.createElement(TavernStageTab, { sessionId: props.scope.sessionId, submit: submitTavernStageInput })
-            }), "dsh-tavern: stage tab");
-            ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(
-                { name: "conversation.session.header.utilities", id: "dsh-tavern-stage", order: 79 },
-                props => React.createElement(TavernStageAction, { ...props, sessions: ctx.sessions, open: sessionId => openTavernSidebarTab(ctx, { type: "dsh-tavern:stage" }, { sessionId }) })
-            )), "dsh-tavern: stage action");
             ctx.effect(() => ctx.betterSidebar.registerTab({
                 id: "dsh-tavern:conversation-settings", title: "本局设置", order: 8, single: true,
                 component: props => React.createElement(TavernConversationSettingsTab, { sessionId: props.scope.sessionId, sessions: ctx.sessions })
@@ -1601,7 +1617,7 @@
 				order: 7,
 				single: true,
 				component: function (props) {
-					return React.createElement(TavernStatusTab, { sessions: ctx.sessions, uiConversation: uiConversation, sessionId: props.scope.sessionId, executeSlash: executeSlash, openStyleTab: function (type, meta) { openTavernSidebarTab(ctx, { type: type, meta: meta }, { sessionId: props.scope.sessionId }); } });
+					return React.createElement(TavernStatusTab, { sessions: ctx.sessions, uiConversation: uiConversation, sessionId: props.scope.sessionId, executeSlash: executeSlash, submitStage: submitTavernStageInput, openStyleTab: function (type, meta) { openTavernSidebarTab(ctx, { type: type, meta: meta }, { sessionId: props.scope.sessionId }); } });
 				}
 			}), "dsh-tavern: Better Sidebar status tab");
 			ctx.effect(() => slots.inject("conversation.session.header.utilities", () => slots.register(

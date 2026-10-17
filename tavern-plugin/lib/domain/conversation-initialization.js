@@ -86,11 +86,14 @@ export function createConversationInitialization(options) {
   async function initialize({ cardPath, sessionId, mode, openingId, userName, requestMode, preparation, cardTask, importDraft = false }) {
     if (requestMode === 'sillytavern') throw new Error('silly 模式已停用')
     const currentSettings = await settings()
-    const defaults = normalizePlayDefaults(currentSettings.defaultPlaySettings)
+    let defaults = normalizePlayDefaults(currentSettings.defaultPlaySettings)
     const effectiveRequestMode = requestMode === 'sillytavern' ? 'sillytavern' : 'dsh'
     const requestedMode = mode === 'card' || mode === 'revision' || mode === 'extract' ? 'card' : (mode === 'script' ? 'script' : (mode === 'story' ? 'story' : null))
     const card = str(cardPath) === '' && requestedMode === 'card' ? null : await cards.read(cardPath)
     if (card === undefined) throw new Error('人物卡不存在: ' + cardPath)
+    // A DSH card may suggest a preset and a few settings for its new games; the player's global defaults fill the rest.
+    const cardDefaults = card !== null && typeof cards.startDefaults === 'function' ? await cards.startDefaults(cardPath).catch(() => null) : null
+    if (cardDefaults?.settings) defaults = normalizePlayDefaults({ ...defaults, ...cardDefaults.settings, backgroundTasks: { ...defaults.backgroundTasks, ...(cardDefaults.settings.backgroundTasks || {}) } })
     // 游玩模式内部仍是 story/script 两类：人物卡已绑定剧本时必须走剧本（script）。
     const script = card === null ? undefined : await cards.script(cardPath)
     const hasScript = script !== undefined && Array.isArray(script.chunks) && script.chunks.length > 0
@@ -109,7 +112,8 @@ export function createConversationInitialization(options) {
       }
     }
     const macroState = { userName: str(userName).trim().slice(0, 80) || defaults.playerName, local: {}, global: {} }
-    const runtimePresetSnapshot = groupOfMode(chatMode) === 'play' ? await playPresetSnapshot() : null
+    const runtimePresetSnapshot = groupOfMode(chatMode) !== 'play' ? null
+      : cardDefaults?.presetPath ? await presets.fullSnapshot(cardDefaults.presetPath).catch(() => playPresetSnapshot()) : await playPresetSnapshot()
     // The card workbench opens empty: no greeting is shown or sent to the model.
     let openingSourceText = chatMode === 'card' ? '' : resolveCardOpening(card, openingId)
     const openingExtensions = chatMode === 'card' ? null : await cards.extensions(cardPath)

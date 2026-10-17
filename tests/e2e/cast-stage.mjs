@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { join } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { readZipEntries, writeZipEntries } from '../../tavern-plugin/lib/domain/zip-entries.js'
 
 import { crc32, deflateSync } from 'node:zlib'
@@ -24,25 +27,26 @@ function figurePng([r, g, b], width = 120, height = 200) {
 // The stage: right panel, character material, full-screen reader that can send the next input.
 export async function castStageChecks({ page, step, output, report }) {
   await step('插件舞台：导演插件定下的地点和时间画在舞台上，可选回内置舞台', async () => {
-    await page.getByRole('button', { name: '舞台', exact: true }).filter({ visible: true }).first().click()
+    await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
     const choice = page.getByRole('combobox', { name: '舞台样式' })
     assert.equal(await choice.inputValue(), 'tavern-plugin-director:scene', '装了插件舞台时默认用它')
-    await page.locator('.dsh-tavern-stage-tab').getByText('酒馆大堂 · 夜晚', { exact: true }).waitFor()
+    await page.locator('.dsh-tavern-stage-section').getByText('酒馆大堂 · 夜晚', { exact: true }).waitFor()
     await page.waitForTimeout(400)
     await page.screenshot({ path: join(output, 'cast-stage-plugin.png') })
     await choice.selectOption('dsh-tavern:builtin')
     report.castStagePlugin = true
   })
   await step('舞台：右侧小舞台按台词换人，导入立绘包后显示立绘', async () => {
-    const scene = page.locator('.dsh-tavern-stage-tab .dsh-tavern-stage-scene')
+    const scene = page.locator('.dsh-tavern-stage-section .dsh-tavern-stage-scene')
     await scene.waitFor()
     // Opens at the turn's last annotated line.
-    await page.locator('.dsh-tavern-stage-tab .dsh-tavern-stage-name').filter({ hasText: '你' }).waitFor()
+    await page.locator('.dsh-tavern-stage-section .dsh-tavern-stage-name').filter({ hasText: '你' }).waitFor()
     await page.getByRole('button', { name: '上一句', exact: true }).first().click()
-    await page.locator('.dsh-tavern-stage-tab .dsh-tavern-stage-name').filter({ hasText: '店主' }).waitFor()
+    await page.locator('.dsh-tavern-stage-section .dsh-tavern-stage-name').filter({ hasText: '店主' }).waitFor()
     assert.equal(await scene.locator('.dsh-tavern-stage-figure-letter').first().textContent(), '店')
     const pack = writeZipEntries([{ path: '店主/joy.png', content: figurePng([214, 140, 92]) }, { path: '店主/neutral.png', content: figurePng([150, 150, 170]) }, { path: 'notes.txt', content: 'x' }])
     const chooser = page.waitForEvent('filechooser')
+    await page.getByText('角色素材', { exact: true }).filter({ visible: true }).first().click()
     await page.getByRole('button', { name: '导入 ST 立绘包', exact: true }).click()
     await (await chooser).setFiles({ name: 'pack.zip', mimeType: 'application/zip', buffer: pack })
     await page.getByText('导入 2 张立绘（店主），跳过 1 个文件').waitFor()
@@ -88,15 +92,15 @@ export async function castSpeechChecks({ page, step, output, report }) {
     await step('配音：设置 OpenAI 兼容渠道，台词行朗读用默认声音，角色素材里换声音后按人物的声音读', async () => {
       const chatUrl = page.url()
       await page.getByRole('button', { name: 'Settings', exact: true }).click()
-      await page.getByText('DSH Tavern', { exact: true }).first().click()
+      await page.getByText('配音', { exact: true }).first().click()
       await page.getByRole('combobox', { name: '配音渠道', exact: true }).selectOption('openai')
       await page.getByRole('textbox', { name: 'API 根地址', exact: true }).fill('http://127.0.0.1:' + server.address().port + '/v1')
       await page.getByRole('textbox', { name: '模型', exact: true }).fill('tts-1')
       await page.getByLabel('API Key', { exact: true }).fill('sk-e2e')
       await page.getByLabel('默认声音', { exact: true }).fill('alloy')
-      await page.getByRole('switch', { name: '配音', exact: true }).click()
+      await page.getByRole('switch', { name: '开启配音', exact: true }).click()
       await page.getByText('已保存，使用「OpenAI 兼容接口」配音').waitFor()
-      assert.equal(await page.getByRole('switch', { name: '配音', exact: true }).isChecked(), true)
+      assert.equal(await page.getByRole('switch', { name: '开启配音', exact: true }).isChecked(), true)
       await page.screenshot({ path: join(output, 'speech-settings.png') })
       await page.goto(chatUrl)
       const row = page.locator('.dsh-tavern-cast-line').filter({ visible: true }).filter({ hasText: '店主' }).first()
@@ -105,7 +109,7 @@ export async function castSpeechChecks({ page, step, output, report }) {
       assert.deepEqual(requests[0].body, { model: 'tts-1', input: '欢迎回来，这是你的奖励。', voice: 'alloy', response_format: 'mp3' })
       assert.equal(requests[0].authorization, 'Bearer sk-e2e')
 
-      await page.getByRole('button', { name: '舞台', exact: true }).filter({ visible: true }).first().click()
+      await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
       const voice = page.getByLabel('店主 的声音', { exact: true })
       await voice.fill('onyx')
       await voice.press('Enter')
@@ -131,7 +135,7 @@ async function expectRequest(requests, match) {
 }
 
 // A CHARX card brings its expressions and background; exporting writes them back.
-export async function castCardFileChecks({ page, step, report }) {
+export async function castCardFileChecks({ page, step, report, savedChat }) {
   await step('CHARX：导入带立绘和背景的卡，素材进角色素材；导出 CHARX 写回', async () => {
     const card = { spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'CHARX 验收', description: '带素材的卡', first_mes: '你好。', group_only_greetings: [], assets: [
       { type: 'icon', uri: 'embeded://assets/icon/images/main.png', name: 'main', ext: 'png' },
@@ -157,12 +161,136 @@ export async function castCardFileChecks({ page, step, report }) {
     for (const asset of written.data.assets) assert.ok(entries.has(asset.uri.replace('embeded://', '')), asset.uri)
     report.castCardFile = true
   })
+  await step('DSH 人物卡：大文件上传后导入，素材包按内容存储，包内文件按类型提供', async () => {
+    const pack = { 'assets/fishpack/manifest.json': JSON.stringify({ id: 'e2e-fish-pack', format: 'dsh-asset-pack', name: '鱼包' }), 'assets/fishpack/media/joy.png': figurePng([240, 180, 80]),
+      'assets/fishpack/media/calm.png': figurePng([120, 140, 200]), 'assets/fishpack/page.html': '<script>alert(1)</script>', 'assets/fishpack/credits/CREDITS.md': '作者自制' }
+    const card = { spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'DSH 卡验收', description: '带素材包', first_mes: '你好。', group_only_greetings: [], assets: [
+      { type: 'emotion', uri: 'embeded://assets/fishpack/media/joy.png', name: 'joy', ext: 'png' }, { type: 'emotion', uri: 'embeded://assets/fishpack/media/calm.png', name: 'calm', ext: 'png' }] } }
+    const dsh = { format: 'dshcard', formatVersion: 1, card: { version: '1.0.0', title: 'DSH 卡验收', author: 'e2e' }, requires: { tavernApi: 2 }, plugins: [],
+      packs: [{ id: 'e2e-fish-pack', title: '鱼包', format: 'dsh-asset-pack', path: 'assets/fishpack/', credits: ['assets/fishpack/credits/CREDITS.md'] }] }
+    const file = writeZipEntries([{ path: 'card.json', content: JSON.stringify(card) }, { path: 'dsh.json', content: JSON.stringify(dsh) }, ...Object.entries(pack).map(([path, content]) => ({ path, content }))])
+    const imported = await importArchive(page, 'DSH 卡验收.dshcard', file)
+    assert.equal(imported.format, 'dshcard')
+    assert.deepEqual(imported.assets.sprites, 2)
+    assert.deepEqual(imported.packs.map(item => [item.id, item.title, item.files, item.reused]), [['e2e-fish-pack', '鱼包', 5, false]])
+    const again = await importArchive(page, 'DSH 卡验收.dshcard', file)
+    assert.equal(again.packs[0].reused, true, '没有写摘要的包按内容重算，同样内容不重复存')
+    assert.notEqual(again.path, imported.path, '再导入一次是另一张卡')
+    const fileUrl = path => new URL('/api/dsh-tavern/pack-file?' + new URLSearchParams({ pack: 'e2e-fish-pack', v: imported.packs[0].contentHash, path }), page.url()).href
+    const image = await page.request.get(fileUrl('media/joy.png'))
+    assert.deepEqual([image.status(), image.headers()['content-type'], image.headers()['content-disposition']], [200, 'image/png', undefined])
+    const partial = await page.request.get(fileUrl('media/joy.png'), { headers: { range: 'bytes=0-7' } })
+    assert.deepEqual([partial.status(), (await partial.body()).length], [206, 8])
+    const html = await page.request.get(fileUrl('page.html'))
+    assert.deepEqual([html.headers()['content-type'], html.headers()['content-disposition']], ['application/octet-stream', 'attachment'], '包里的网页只能下载，不在酒馆页面里运行')
+    assert.equal((await page.request.get(fileUrl('../card.json'))).status(), 404)
+    report.dshCard = { imported: true }
+
+    // A card that carries a plugin: on with the card, confined to it, off from the card library.
+    const pluginCard = writeZipEntries([{ path: 'card.json', content: JSON.stringify({ ...card, data: { ...card.data, name: '插件卡验收' } }) },
+      { path: 'dsh.json', content: JSON.stringify({ ...dsh, card: { ...dsh.card, title: '插件卡验收' }, packs: [], plugins: [{ name: 'e2e-card-plugin', path: 'plugins/ping/', purpose: '验收' }] }) },
+      { path: 'plugins/ping/package.json', content: JSON.stringify({ name: 'dsh-e2e-card-ping', private: true, type: 'module', exports: { '.': './index.mjs' } }) },
+      { path: 'plugins/ping/index.mjs', content: "export const name = 'dsh-e2e-card-ping'\nexport const inject = ['tavern']\nexport function apply(ctx) { ctx.tavern.handle('e2e-card/ping', async ({ gameId }) => ({ pong: true, gameId: gameId || '' })) }\n" }])
+    const withPlugin = await importArchive(page, '插件卡验收.dshcard', pluginCard)
+    assert.deepEqual(withPlugin.plugins.map(item => [item.name, item.enabled]), [['dsh-e2e-card-ping', true]], '导入即启用')
+    const call = (method, args) => page.evaluate(async ([method, args]) => (await fetch('/api/dsh-tavern/' + method, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args) })).json(), [method, args])
+    let pong = null
+    for (let attempt = 0; attempt < 60 && !pong?.ok; attempt++) { await page.waitForTimeout(500); pong = await call('callPluginHandler', { name: 'e2e-card/ping', args: {} }) }
+    assert.deepEqual(pong.result, { pong: true, gameId: '' }, '导入后宿主侧几秒内加载')
+    const scopes = await call('cardPluginScopes', {})
+    assert.equal(scopes.scopes['dsh-e2e-card-ping'], withPlugin.path)
+    const sessionId = (await savedChat()).sessionId
+    const other = await call('callPluginHandler', { name: 'e2e-card/ping', args: { gameId: sessionId } })
+    assert.equal(other.ok, false, '别的卡的局调用被拒：' + JSON.stringify(other))
+    await call('setCardPlugins', { path: withPlugin.path, enabled: false })
+    for (let attempt = 0; attempt < 60 && pong?.ok; attempt++) { await page.waitForTimeout(500); pong = await call('callPluginHandler', { name: 'e2e-card/ping', args: {} }) }
+    assert.equal(pong.ok, false, '停用后卸载')
+    report.dshCard.plugin = true
+  })
+}
+
+// 大肥鱼.dshcard (examples/dafeiyu-card): import it with its plugin,
+// play a turn, and see the card plugin's stage. Runs last: it opens a game of another card.
+const DEMO_CARD = fileURLToPath(new URL('../../examples/dafeiyu-card/大肥鱼.dshcard', import.meta.url))
+
+export async function dshCardPlayChecks({ page, step, output, report }) {
+  const cardFile = process.env.TAVERN_E2E_DSHCARD || (existsSync(DEMO_CARD) ? DEMO_CARD : '')
+  if (!cardFile) return
+  await step('大肥鱼 DSH 人物卡：导入即带上卡内插件，开局后舞台由卡内插件导演', async () => {
+    const started = Date.now()
+    const card = await importArchive(page, '大肥鱼.dshcard', await readFile(cardFile))
+    report.dafeiyu = { importMs: Date.now() - started, sprites: card.assets?.sprites, packs: card.packs.map(item => item.title + ' ' + item.files), plugins: card.plugins.map(item => item.name) }
+    const call = (method, args) => page.evaluate(async ([method, args]) => (await fetch('/api/dsh-tavern/' + method, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args) })).json(), [method, args])
+    assert.deepEqual(card.plugins.map(item => item.enabled), [true])
+    let reply = null
+    for (let attempt = 0; attempt < 60; attempt++) {
+      reply = await call('callPluginHandler', { name: 'dsh-card-dafeiyu-galgame/scene', args: {} })
+      if (!/没有名为/.test(reply.error || '')) break
+      await page.waitForTimeout(500)
+    }
+    assert.doesNotMatch(reply.error || '', /没有名为/, '卡内插件启用后加载')
+    await page.reload()
+    await page.getByRole('button', { name: /选择人物卡.*新开游玩/ }).click()
+    await page.getByText('大肥鱼', { exact: true }).first().click()
+    await page.getByRole('button', { name: '开始新游戏', exact: true }).click()
+    const composer = page.getByRole('textbox', { name: /发消息|Message/ })
+    await composer.waitFor()
+    // A new game opens its settings and status tabs first; open the stage after that.
+    await page.getByText(/人物设计档案/).filter({ visible: true }).first().waitFor()
+    await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
+    const choice = page.getByRole('combobox', { name: '舞台样式' })
+    await choice.locator('option', { hasText: '大肥鱼舞台' }).waitFor({ state: 'attached' })
+    await choice.selectOption({ label: '大肥鱼舞台（dsh-card-dafeiyu-galgame）' })
+    const tab = page.locator('.dsh-tavern-stage-section')
+    // The opening scene comes from the card: living room at night, its music, the maid outfit.
+    await tab.getByText(/^现代客厅 · ♪ /).waitFor()
+    const portrait = tab.locator('img[alt="大肥鱼"]')
+    await portrait.waitFor()
+    const opening = await portrait.getAttribute('src')
+    report.dafeiyu.opening = await tab.getByText(/^现代客厅 · ♪ /).textContent()
+    await page.screenshot({ path: join(output, 'dafeiyu-opening.png') })
+    await composer.fill('一起去地铁站吧')
+    await composer.press('Enter')
+    // The settlement directs the next scene (the fixed model picks the Claude outfit): the portrait changes.
+    await page.getByText('一起去地铁站吧', { exact: true }).filter({ visible: true }).first().waitFor()
+    await page.locator('[data-chat-flow-kind="turn-tail"]').last().waitFor({ timeout: 120000 })
+    // What the card plugin directed for this turn (the fixed model picks the Claude outfit, night, the first track).
+    const game = ((await call('listSessions', {})).sessions || []).find(item => item.cardPath === card.path)
+    assert.ok(game, '找到大肥鱼的这一局')
+    // Settlement finishes after the reply; poll until it has directed this turn.
+    let directed = null
+    for (let attempt = 0; attempt < 120; attempt++) {
+      directed = await call('callPluginHandler', { name: 'dsh-card-dafeiyu-galgame/scene', args: { gameId: game.sessionId, turn: 2 } })
+      if (directed.ok && directed.result.figure.outfit !== '女仆装') break
+      await page.waitForTimeout(500)
+    }
+    assert.equal(directed.ok, true, JSON.stringify(directed))
+    assert.equal(directed.result.figure.outfit, 'Claude')
+    assert.equal(directed.result.time, 'night')
+    report.dafeiyu.directed = { background: directed.result.background.name, outfit: directed.result.figure.outfit, music: directed.result.music.name }
+    // The stage stays in front while background agents run; it shows the new outfit by itself.
+    await page.waitForFunction(([selector, before]) => { const image = document.querySelector(selector); return image && image.offsetParent && image.getAttribute('src') !== before }, ['.dsh-tavern-stage-section img[alt="大肥鱼"]', opening], { timeout: 30000 })
+    await page.getByRole('button', { name: '全屏舞台', exact: true }).click()
+    await page.waitForTimeout(800)
+    await page.screenshot({ path: join(output, 'dafeiyu-stage.png') })
+    await page.keyboard.press('Escape')
+  })
+}
+
+async function importArchive(page, name, bytes) {
+  const base = new URL('/', page.url()).href
+  const upload = await page.request.post(base + 'api/dsh-tavern/card-upload', { data: bytes, headers: { 'content-type': 'application/octet-stream' }, timeout: 600000 })
+  const sent = await upload.json()
+  assert.equal(sent.ok, true, JSON.stringify(sent))
+  const reply = await (await page.request.post(base + 'api/dsh-tavern/importCardUpload', { data: { uploadId: sent.uploadId, name }, timeout: 600000 })).json()
+  assert.equal(reply.ok, true, JSON.stringify(reply))
+  return reply.card
 }
 
 // Run last: it plays one more turn from the full-screen stage.
 export async function castStageInputChecks({ page, step, report }) {
   await step('舞台全屏：在最后一句后直接发送下一轮', async () => {
-    await page.getByRole('button', { name: '舞台', exact: true }).filter({ visible: true }).first().click()
+    await page.getByText('酒馆状态', { exact: true }).filter({ visible: true }).last().click()
     await page.getByRole('button', { name: '全屏舞台', exact: true }).click()
     const overlay = page.locator('.dsh-tavern-stage-overlay')
     await overlay.waitFor()

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { adaptedDshVersion, assertCompatibleDshVersion } from '../bin/dsh-compatibility.mjs'
+import { adaptedDshVersion, assertCompatibleDshVersion, desktopReleasesUrl, dshaReleasesUrl } from '../bin/dsh-compatibility.mjs'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const unix = await readFile(new URL('../install.sh', import.meta.url), 'utf8')
@@ -15,7 +15,12 @@ test('所有平台仅允许完全匹配的 DSH 版本', () => {
       assert.throws(() => assertCompatibleDshVersion(version, host), error => {
         assert.match(error.message, /必须使用/)
         assert.ok(error.message.includes(adaptedDshVersion))
-        if (host !== 'cli') { assert.match(error.message, /已停止安装/); assert.match(error.message, /https:\/\/github.com\//) }
+          if (host !== 'cli') {
+            assert.match(error.message, /已停止安装/)
+            // 0.2.1-rc.2 适配：Desktop 下载地址为官方 https://www.deepseek.com/harness/；
+            // 断言跟随兼容清单字段（DSHA 仍为 GitHub 发布页），不写死域名。
+            assert.ok(error.message.includes(host === 'desktop' ? desktopReleasesUrl : dshaReleasesUrl), error.message)
+          }
         return true
       })
     }

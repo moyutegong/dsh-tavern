@@ -325,3 +325,17 @@ test('a retained lock without ownerDone still treats a live owner as a writer', 
   age(owner.lockDir, 5 * 60 * 1000)
   assert.throws(() => acquireInstallation({ dshHome }), { code: 'INSTALLATION_BUSY' })
 })
+
+test('an unadopted reservation is reclaimed once its launched updater has exited', async t => {
+  const dshHome = home(t)
+  const exited = await child('')
+  const reservation = acquireInstallation({ dshHome, state: 'reserved', pid: 0 })
+  assert.throws(() => acquireInstallation({ dshHome }), { code: 'INSTALLATION_BUSY' })
+  reservation.update({ launcherPid: process.pid })
+  assert.throws(() => acquireInstallation({ dshHome }), { code: 'INSTALLATION_BUSY' })
+  reservation.update({ launcherPid: exited.pid })
+  assert.equal(readInstallation(dshHome).state, 'reserved')
+  const successor = acquireInstallation({ dshHome })
+  assert.equal(successor.created, true)
+  successor.release()
+})

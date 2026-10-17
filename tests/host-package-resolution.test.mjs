@@ -193,6 +193,20 @@ test('真机桌面：Windows 子进程补丁用 asar 根装得上、可回滚', 
   assert.equal(Local.prototype.spawn, original)
 })
 
+test('CLI 入口是无扩展名的 bin/dsh 链接时，跟到真实 bin.js 当启动器入口', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-cli-entry-'))
+  const real = join(root, 'lib', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+  mkdirSync(dirname(real), { recursive: true })
+  writeFileSync(real, '')
+  mkdirSync(join(root, 'bin'))
+  symlinkSync(real, join(root, 'bin', 'dsh'))
+  try {
+    assert.equal(desktopLauncherEntry({ env: {}, argv: ['node', join(root, 'bin', 'dsh')] }), realpathSync(real))
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('CLI 无扩展名启动链接从真实运行时解析宿主包', { skip: process.platform === 'win32' }, async t => {
   const root = mkdtempSync(join(tmpdir(), 'tavern-cli-host-'))
   t.after(() => rmSync(root, { recursive: true, force: true }))

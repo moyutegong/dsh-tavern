@@ -49,7 +49,7 @@ export function createSessionSurfaceMutator(session, events = sessionEvents(sess
     const open = openTurnStep(events)
     const adoptsStep = (type === 'assistant/message' || type === 'tool/result')
       && events.some(event => event.type === 'turn/start')
-      && (open.turn === null || open.step === null)
+      && (open.turn === null || open.step === null || data.turn !== open.turn || data.step !== open.step)
     if (id) {
       const prior = (replacements.get(type)?.get(id) || []).find(event => isDeepStrictEqual(event.sourceEventSeqs, sourceEventSeqs))
       if (prior) {

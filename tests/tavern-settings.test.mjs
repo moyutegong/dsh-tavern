@@ -112,3 +112,10 @@ test('the global scene image Agent default model saves like the other defaults a
 test('酒馆状态各区块直接显示，旧的显示开关不再保留', () => {
   assert.equal(Object.hasOwn(presentTavernSettings({ statusSections: { posture: true } }, {}), 'statusSections'), false)
 })
+
+test('进入游戏时打开酒馆状态：默认开，可以关', () => {
+  assert.equal(presentTavernSettings({}, {}).autoOpenStatusPanel, true)
+  const off = applyTavernSettingsPatch({}, { autoOpenStatusPanel: false })
+  assert.equal(presentTavernSettings(off, {}).autoOpenStatusPanel, false)
+  assert.throws(() => applyTavernSettingsPatch({}, { autoOpenStatusPanel: 'no' }), /布尔值/)
+})

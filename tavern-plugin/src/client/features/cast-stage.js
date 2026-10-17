@@ -1,25 +1,6 @@
 		// The stage (docs/design/cast-presentation.md): another view of the same story. A small
 		// stage in the right panel, expandable to a full-screen visual-novel reader. It only reads
 		// the story text, its dialogue annotations and the card's character material.
-		const tavernCastSettings = (function () {
-			let enabled = null, loading = null;
-			const listeners = new Set();
-			function load() {
-				if (loading) return loading;
-				loading = rpc("getTavernSettings").then(function (result) { enabled = result.settings && result.settings.castPresentation === true; },
-					function () { enabled = false; }).finally(function () { loading = null; listeners.forEach(function (listener) { listener(); }); });
-				return loading;
-			}
-			if (typeof window.addEventListener === "function") window.addEventListener("dsh-tavern-settings-changed", function () { void load(); });
-			return {
-				subscribe: function (listener) { listeners.add(listener); if (enabled === null) void load(); return function () { listeners.delete(listener); }; },
-				get: function () { return enabled === true; }
-			};
-		})();
-		function useTavernCastEnabled() {
-			return React.useSyncExternalStore(tavernCastSettings.subscribe, tavernCastSettings.get);
-		}
-
 		function useTavernCastStage(sessionId) {
 			const live = useLiveTavernView(sessionId, "cast-stage", [["settlementTurn"], ["updatedAt"]]);
 			const turnKey = live.view ? String(live.view.settlementTurn || 0) + ":" + String(live.view.updatedAt || 0) : "";
@@ -30,7 +11,8 @@
 				try { if (tavernSessionSignals && typeof tavernSessionSignals.subscribe === "function") stop = tavernSessionSignals.subscribe(sessionId, "cast", function () { setVersion(function (value) { return value + 1; }); }); } catch (_) {}
 				const onSettings = function () { setVersion(function (value) { return value + 1; }); };
 				window.addEventListener("dsh-tavern-settings-changed", onSettings);
-				return function () { stop(); window.removeEventListener("dsh-tavern-settings-changed", onSettings); };
+				window.addEventListener("dsh-tavern-card-stage-changed", onSettings);
+				return function () { stop(); window.removeEventListener("dsh-tavern-settings-changed", onSettings); window.removeEventListener("dsh-tavern-card-stage-changed", onSettings); };
 			}, [sessionId]);
 			const refresh = React.useCallback(function () { setVersion(function (value) { return value + 1; }); }, []);
 			React.useEffect(function () {
@@ -61,7 +43,7 @@
 			const character = tavernCastCharacter(data.cast, name);
 			const sprites = character ? character.sprites || {} : {};
 			const sprite = sprites[emotion] || sprites.neutral || Object.values(sprites)[0] || "";
-			const avatar = character && character.avatarUrl || (name === data.card.name ? data.card.imageUrl : "");
+			const avatar = character && (character.avatars || {})[emotion] || character && character.avatarUrl || (name === data.card.name ? data.card.imageUrl : "");
 			return preferAvatar ? avatar || sprite : sprite || avatar;
 		}
 
@@ -111,16 +93,22 @@
 		// With no choice made, a plugin view is used: installing one is asking for it.
 		const TAVERN_STAGE_VIEW_KEY = "dsh-tavern-stage-view";
 		const TAVERN_STAGE_BUILTIN = "dsh-tavern:builtin";
-		function useTavernStageView() {
+		// A card that brings its own stage (a DSH card's plugin) opens on it; the choice is then kept per card.
+		function useTavernStageView(sessionId) {
 			useTavernUiExtensions();
-			const [chosen, setChosen] = React.useState(function () { try { return window.localStorage.getItem(TAVERN_STAGE_VIEW_KEY) || ""; } catch (_) { return ""; } });
-			const views = tavernUiExtensions.stageViews();
-			const view = chosen === TAVERN_STAGE_BUILTIN ? null : views.find(function (entry) { return entry.key === chosen; }) || views[0] || null;
+			const scopes = useTavernCardPluginScopes();
+			const [, setVersion] = React.useState(0);
+			const views = tavernUiExtensions.stageViews().filter(function (entry) { return tavernPluginAllowed(entry.owner, sessionId); });
+			const cardView = views.find(function (entry) { return scopes[entry.owner]; }) || null;
+			const storageKey = cardView ? TAVERN_STAGE_VIEW_KEY + ":" + scopes[cardView.owner] : TAVERN_STAGE_VIEW_KEY;
+			let chosen = "";
+			try { chosen = window.localStorage.getItem(storageKey) || ""; } catch (_) {}
+			const view = chosen === TAVERN_STAGE_BUILTIN ? null : views.find(function (entry) { return entry.key === chosen; }) || cardView || views[0] || null;
 			function choose(key) {
-				setChosen(key);
-				try { window.localStorage.setItem(TAVERN_STAGE_VIEW_KEY, key); } catch (_) {}
+				try { window.localStorage.setItem(storageKey, key); } catch (_) {}
+				setVersion(function (value) { return value + 1; });
 			}
-			return { views: views, view: view, choose: choose };
+			return { views: views, view: view, card: Boolean(cardView), choose: choose };
 		}
 
 		function TavernStageViewSwitch(props) {
@@ -129,7 +117,7 @@
 			const current = props.choice.view ? props.choice.view.key : TAVERN_STAGE_BUILTIN;
 			return h("select", { className: "dsh-tavern-stage-view-switch", value: current, "aria-label": "舞台样式", onChange: function (event) { props.choice.choose(event.target.value); } },
 				[{ key: TAVERN_STAGE_BUILTIN, label: "内置" }].concat(props.choice.views).map(function (entry) {
-					return h("option", { key: entry.key, value: entry.key }, entry.owner ? entry.label + "（" + entry.owner + "）" : entry.label);
+					return h("option", { key: entry.key, value: entry.key, title: entry.owner || undefined }, entry.label);
 				}));
 		}
 
@@ -149,26 +137,22 @@
 				React.createElement(TavernStagePluginScene, { view: props.view, input: input, fallback: builtin }));
 		}
 
-		function useTavernStageReader(data, startAtLatestLine) {
+		// A new turn is read from its first beat; beats added to the same turn keep the reader's place.
+		function useTavernStageReader(data) {
 			const turns = data && Array.isArray(data.turns) ? data.turns : [];
 			const latest = turns.length ? turns[turns.length - 1] : null;
 			const beats = React.useMemo(function () { return latest ? tavernStageBeats(latest) : []; }, [latest && latest.turn, latest && latest.text, latest && JSON.stringify(latest.lines)]);
-			const initial = function () {
-				if (!startAtLatestLine) return 0;
-				for (let at = beats.length - 1; at >= 0; at -= 1) if (beats[at].kind === "line") return at;
-				return Math.max(0, beats.length - 1);
-			};
-			const [index, setIndex] = React.useState(initial);
-			const key = latest ? latest.turn + ":" + beats.length : "";
-			React.useEffect(function () { setIndex(initial()); }, [key]);
+			const [index, setIndex] = React.useState(0);
+			const key = latest ? latest.turn + ":" + (beats[0] ? beats[0].text : "") : "";
+			React.useEffect(function () { setIndex(0); }, [key]);
 			return { beats: beats, index: Math.min(index, Math.max(0, beats.length - 1)), setIndex: setIndex, turn: latest && latest.turn };
 		}
 
-		// Reading the stage aloud: a per-browser choice, effective while voicing is on.
+		// Reading the stage aloud: on by default once voicing is on; the button turns it off for this browser.
 		const TAVERN_STAGE_READ_KEY = "dsh-tavern-stage-read";
 		function useTavernStageReading() {
 			const speech = useTavernSpeechSettings();
-			const [reading, setReading] = React.useState(function () { try { return window.localStorage.getItem(TAVERN_STAGE_READ_KEY) === "1"; } catch (_) { return false; } });
+			const [reading, setReading] = React.useState(function () { try { return window.localStorage.getItem(TAVERN_STAGE_READ_KEY) !== "0"; } catch (_) { return true; } });
 			function toggle() {
 				const next = !reading;
 				setReading(next);
@@ -190,7 +174,7 @@
 
 		function TavernStageFullscreen(props) {
 			const h = React.createElement;
-			const reader = useTavernStageReader(props.data, false);
+			const reader = useTavernStageReader(props.data);
 			const [auto, setAuto] = React.useState(false);
 			const reading = useTavernStageReading();
 			const [draft, setDraft] = React.useState("");
@@ -268,7 +252,7 @@
 			(data.turns || []).forEach(function (turn) { (turn.lines || []).forEach(function (line) { add(line.speaker); }); });
 			async function run(method, args, done) {
 				setBusy(true); setNotice("");
-				try { const result = await rpc(method, args, props.sessionId); props.onCast(result.cast); setNotice(done(result)); }
+				try { const result = await rpc(method, args, props.sessionId); props.onCast(result.cast); window.dispatchEvent(new CustomEvent("dsh-tavern-cast-assets-changed")); setNotice(done(result)); }
 				catch (error) { setNotice("失败：" + String(error.message || error)); }
 				finally { setBusy(false); }
 			}
@@ -307,37 +291,43 @@
 							onSave: function (provider, voice) { void run("castSetVoice", { name: name, provider: provider, voice: voice }, function () { return voice ? "已保存 " + name + " 的声音" : "已清除 " + name + " 的声音"; }); } }),
 						h("button", { type: "button", disabled: busy, onClick: function () { upload(name, "avatar"); } }, "换头像"),
 						h("button", { type: "button", disabled: busy, onClick: function () { upload(name, emotion); } }, "加" + TAVERN_CAST_EMOTIONS[emotion] + "立绘"),
-						character ? h("button", { type: "button", disabled: busy, onClick: function () { void run("castRemoveCharacter", { name: character.name }, function () { return "已清除 " + character.name + " 的素材"; }); } }, "清除") : null);
+						character && !character.plugin ? h("button", { type: "button", disabled: busy, onClick: function () { void run("castRemoveCharacter", { name: character.name }, function () { return "已清除 " + character.name + " 的素材"; }); } }, "清除") : null);
 				})),
 				notice ? h("p", { role: "status", className: "dsh-tavern-settings-desc" }, notice) : null);
 		}
 
-		function TavernStageTab(props) {
+		/**
+		 * The stage at the top of 酒馆状态, like a card's status bar: shown for games that have one
+		 * (「对话头像」 on, or a card that brings its own stage), absent otherwise.
+		 */
+		function TavernStageSection(props) {
 			const h = React.createElement;
-			const enabled = useTavernCastEnabled();
 			const stage = useTavernCastStage(props.sessionId);
-			const reader = useTavernStageReader(stage.data, true);
+			const reader = useTavernStageReader(stage.data);
 			const [fullscreen, setFullscreen] = React.useState(false);
-			const choice = useTavernStageView();
+			const choice = useTavernStageView(props.sessionId);
 			const reading = useTavernStageReading();
 			const beat = reader.beats[reader.index];
-			React.useEffect(function () {
-				if (reading.on && beat && !fullscreen) void tavernSpeech.speak(tavernBeatSpeech(props.sessionId, beat));
-			}, [reader.index, reader.turn, reader.beats, reading.on, fullscreen, props.sessionId]);
+
 			const data = stage.data;
-			if (!data) return h("aside", { className: "dsh-tavern-status dsh-tavern-stage-tab", "aria-label": "舞台" }, h("p", { className: "dsh-tavern-settings-desc" }, stage.error || "正在读取舞台…"));
-			return h("aside", { className: "dsh-tavern-status dsh-tavern-stage-tab", "aria-label": "舞台" },
-				h("div", { className: "dsh-tavern-status-head" }, h("strong", null, "舞台"),
-					h(TavernStageViewSwitch, { choice: choice }),
-					h("button", { type: "button", className: "dsh-tavern-btn", onClick: function () { setFullscreen(true); } }, "全屏舞台")),
-				h("div", { className: "dsh-tavern-status-body dsh-tavern-stage-body" },
-				!enabled ? h("p", { className: "dsh-tavern-settings-desc" }, "在「设置 → DSH Tavern → 显示与交互」打开「对话头像」后，后台会标注每句台词的说话人和情绪，舞台才会换人、换表情。") : null,
+			const shown = Boolean(data && data.enabled !== false);
+			React.useEffect(function () {
+				if (shown && reading.on && beat && !fullscreen) void tavernSpeech.speak(tavernBeatSpeech(props.sessionId, beat));
+			}, [reader.index, reader.turn, reader.beats, reading.on, fullscreen, shown, props.sessionId]);
+			// Music belongs to this game's stage: leaving the game (switching, deleting) or losing the stage stops it.
+			React.useEffect(function () { if (shown) return function () { tavernMusic.stop(); }; }, [props.sessionId, shown]);
+			if (!shown) return null;
+			return h("section", { className: "dsh-tavern-status-section dsh-tavern-stage-section", "aria-label": "舞台" },
+				h("div", { className: "dsh-tavern-stage-head" }, h("span", { className: "dsh-tavern-status-label" }, "舞台"),
+					h(TavernStageViewSwitch, { choice: choice }), h(TavernMusicToggle, null),
+					h("button", { type: "button", className: "dsh-tavern-stage-head-btn", title: "全屏舞台", "aria-label": "全屏舞台", onClick: function () { setFullscreen(true); } }, "⛶ 全屏")),
 				h(TavernStageSceneView, { view: choice.view, sessionId: props.sessionId, data: data, beats: reader.beats, index: reader.index, onAdvance: function () { reader.setIndex(function (value) { return Math.min(reader.beats.length - 1, value + 1); }); },
 					footer: h("div", { className: "dsh-tavern-stage-controls", onClick: function (event) { event.stopPropagation(); } },
 						h("button", { type: "button", "aria-label": "上一句", disabled: reader.index <= 0, onClick: function () { reader.setIndex(function (value) { return Math.max(0, value - 1); }); } }, "‹"),
 						h("span", { className: "dsh-tavern-stage-progress" }, reader.beats.length ? (reader.index + 1) + " / " + reader.beats.length : ""),
 						h("button", { type: "button", "aria-label": "下一句", disabled: reader.index >= reader.beats.length - 1, onClick: function () { reader.setIndex(function (value) { return Math.min(reader.beats.length - 1, value + 1); }); } }, "›"),
 						h(TavernStageReadButton, { reading: reading })) }),
-				h(TavernCastManager, { sessionId: props.sessionId, data: data, onCast: function (cast) { stage.setData(Object.assign({}, data, { cast: cast })); } })),
+				h("details", { className: "dsh-tavern-stage-cast" }, h("summary", null, "角色素材"),
+					h(TavernCastManager, { sessionId: props.sessionId, data: data, onCast: function (cast) { stage.setData(Object.assign({}, data, { cast: cast })); } })),
 				fullscreen ? require("react-dom").createPortal(h(TavernStageFullscreen, { view: choice.view, sessionId: props.sessionId, data: data, generating: props.generating, onSubmit: function (text) { return props.submit(props.sessionId, text); }, onClose: function () { setFullscreen(false); } }), document.body) : null);
 		}

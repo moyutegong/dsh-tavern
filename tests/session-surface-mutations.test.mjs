@@ -94,3 +94,33 @@ test('回合已关闭时替换正文：自开专用回合并推进 idle Agent �
     assert.equal(agent.phase.lastTurn, 2)
   } finally { setAgentResolver(null) }
 })
+// Body edits name their original round (turn N, step 1) long after it closed.
+test('正文编辑写在已结束回合之后，存档仍满足 released V4 的回合约束', { skip: !process.env.DSH_BOOT_MODULE, timeout: 30000 }, async () => {
+  const { pathToFileURL } = await import('node:url')
+  const { sessionEvents } = await import('../tavern-plugin/lib/domain/session-events.js')
+  const { assertReleasedV4Relationships } = await import(
+    new URL('../../dsh-session-format-v3-to-v4/lib/index.js', pathToFileURL(process.env.DSH_BOOT_MODULE)))
+  const header = { type: 'session', version: 4, id: 'body-edit-fixture', createdAt: 1, cwd: '/tmp', isSeeded: false, delegationDepth: 0, agentPreset: 'tavern' }
+  for (const closeTurn of [true, false]) {
+    const events = []
+    const session = { header, id: header.id, events, surface: { nodes: [] }, append(type, eventData, options = {}) {
+      const event = { seq: events.length, type, data: eventData, ...options }
+      events.push(event)
+      if (options.surfaceOp?.op === 'replace') {
+        const start = this.surface.nodes.indexOf(options.surfaceOp.start)
+        this.surface.nodes.splice(start, this.surface.nodes.indexOf(options.surfaceOp.end) - start + 1, event.seq)
+      } else if (options.surfaceOp === 'append') this.surface.nodes.push(event.seq)
+      return event
+    } }
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('system/message', { turn: 1, step: 1, message: { id: 'head', role: 'system', content: [], source: { kind: 'system-prompt' } } }, { surfaceOp: 'append' })
+    session.append('user/message', { id: 'u1', role: 'user', content: [{ type: 'text', text: '问' }], source: { kind: 'user' } }, { surfaceOp: 'append' })
+    session.append('assistant/message', { turn: 1, step: 1, message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: '答' }], source: { kind: 'model', provider: 'fixture', model: 'fixture' } } }, { surfaceOp: 'append' })
+    session.append('step/end', { turn: 1, step: 1 })
+    if (closeTurn) session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
+    replaceSessionSurface(session, 'assistant/message', { turn: 1, step: 1, message: { id: 'a1', role: 'assistant', content: [{ type: 'text', text: '改过的答' }], source: { kind: 'model', provider: 'dsh-tavern', model: 'body-edit' } } }, { start: 4, end: 4, sourceEventSeqs: [4] })
+    const written = sessionEvents(session)
+    assertReleasedV4Relationships({ header, events: written, inheritedEventCount: 0 }, new Set(written.map(event => event.type)))
+  }
+})

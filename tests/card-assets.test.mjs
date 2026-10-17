@@ -33,6 +33,15 @@ test('表情名对到 ST 的 28 种情绪：英文、中文、带编号的都认
   assert.equal(emotionSlot('anger.png'), 'anger')
   assert.equal(emotionSlot('default'), 'neutral')
   assert.equal(emotionSlot('thinking'), null)
+  assert.equal(emotionSlot('crying'), 'sadness')
+})
+
+test('同一情绪有多张时，名字最贴近的那张当立绘（sad 胜过 crying），其余保留', async () => {
+  const cast = createCastAssets({ store: store() })
+  const summary = await cast.importCardAssets({ cardPath: 'cards/c.json', name: '鱼', collected: { emotions: [{ name: 'crying', ext: 'png', bytes: png('cry') }, { name: 'sad', ext: 'png', bytes: png('sad') }], backgrounds: [], cover: null, extras: [], cast: [], skipped: 0 } })
+  assert.equal(summary.sprites, 1)
+  const manifest = await cast.read('cards/c.json')
+  assert.deepEqual(manifest.extras.map(item => item.name), ['crying'])
 })
 
 test('CHARX：PNG 卡面带上卡数据存成 PNG，立绘、背景、其他素材分开；地址读不到的计数', () => {
@@ -92,7 +101,7 @@ test('导入角色素材再导出 CHARX：主角立绘在标准位置，其他�
   const manifest = await cast.read('cards/a.json')
   assert.deepEqual(manifest.characters.map(item => [item.name, Object.keys(item.sprites)]), [['林曦', ['joy']], ['老周', ['anger']]])
   assert.equal(manifest.backgrounds.length, 1)
-  assert.deepEqual(manifest.extras.map(item => [item.type, item.name]), [['emotion', '开心'], ['emotion', 'thinking'], ['x-risu-asset', 'bgm']])
+  assert.deepEqual(manifest.extras.map(item => [item.type, item.name]), [['emotion', 'happy'], ['emotion', 'thinking'], ['x-risu-asset', 'bgm']])
 
   const files = new Map()
   for (const file of [...manifest.characters.flatMap(item => [item.avatar, ...Object.values(item.sprites)]), ...manifest.backgrounds.map(item => item.file), ...manifest.extras.map(item => item.file)].filter(Boolean)) files.set(file, await cast.readFile('cards/a.json', file))
@@ -102,7 +111,7 @@ test('导入角色素材再导出 CHARX：主角立绘在标准位置，其他�
   assert.equal(exported.spec, 'chara_card_v3')
   assert.deepEqual(exported.data.group_only_greetings, [])
   assert.equal(exported.data.extensions.other, 1, '已有扩展保留')
-  assert.deepEqual(exported.data.assets.map(item => [item.type, item.name]), [['icon', 'main'], ['emotion', 'joy'], ['background', 'main'], ['emotion', '开心'], ['emotion', 'thinking'], ['x-risu-asset', 'bgm']])
+  assert.deepEqual(exported.data.assets.map(item => [item.type, item.name]), [['icon', 'main'], ['emotion', 'joy'], ['background', 'main'], ['emotion', 'happy'], ['emotion', 'thinking'], ['x-risu-asset', 'bgm']])
   for (const asset of exported.data.assets) assert.ok(entries.has(asset.uri.replace('embeded://', '')), asset.uri)
   assert.deepEqual(exported.data.extensions.dsh_tavern.cast.characters.map(item => [item.name, Object.keys(item.sprites), item.voices]), [['林曦', ['joy'], {}], ['老周', ['anger'], { openai: 'onyx' }]])
 

@@ -11,7 +11,7 @@
 			const entries = new Map();
 			function entryFor(sessionId) {
 				let entry = entries.get(sessionId);
-				if (!entry) { entry = { version: 0, generation: 0, enabled: true, turns: new Map(), queued: new Set(), timer: null, listeners: new Set(), stop: null }; entries.set(sessionId, entry); }
+				if (!entry) { entry = { version: 0, generation: 0, enabled: true, characters: [], turns: new Map(), queued: new Set(), timer: null, listeners: new Set(), stop: null }; entries.set(sessionId, entry); }
 				return entry;
 			}
 			function notify(entry) { entry.version += 1; Array.from(entry.listeners).forEach(function (listener) { listener(); }); }
@@ -37,6 +37,7 @@
 					rpc("castForTurns", { turns: turns }, sessionId).then(function (result) {
 						if (entries.get(sessionId) !== entry || entry.generation !== generation) return;
 						entry.enabled = result.enabled !== false;
+						if (Array.isArray(result.characters)) entry.characters = result.characters;
 						turns.forEach(function (item) { entry.turns.set(item, Array.isArray(result.turns && result.turns[item]) ? result.turns[item] : []); });
 						notify(entry);
 					}, function () {
@@ -60,10 +61,14 @@
 					if (!entry.listeners.size) { entry.stop(); if (entry.timer !== null) window.clearTimeout(entry.timer); entries.delete(sessionId); }
 				};
 			}
-			if (typeof window.addEventListener === "function") window.addEventListener("dsh-tavern-settings-changed", function () { Array.from(entries.keys()).forEach(invalidate); });
+			if (typeof window.addEventListener === "function") {
+				window.addEventListener("dsh-tavern-settings-changed", function () { Array.from(entries.keys()).forEach(invalidate); });
+				window.addEventListener("dsh-tavern-cast-assets-changed", function () { Array.from(entries.keys()).forEach(invalidate); });
+			}
 			return {
 				subscribe: subscribe, load: load,
 				version: function (sessionId) { return entries.get(sessionId) ? entries.get(sessionId).version : 0; },
+				characters: function (sessionId) { const entry = entries.get(sessionId); return entry ? entry.characters : []; },
 				lines: function (sessionId, turn) { const entry = entries.get(sessionId); return entry && entry.turns.get(turn) || null; }
 			};
 		})();
@@ -116,13 +121,25 @@
 		function TavernCastAvatar(props) {
 			const [failed, setFailed] = React.useState(false);
 			const name = String(props.speaker || "");
-			if (props.imageUrl && !failed) return React.createElement("img", { className: "dsh-tavern-cast-avatar", src: props.imageUrl, alt: "", loading: "lazy", onError: function () { setFailed(true); } });
+			// A click shows the picture full size.
+			if (props.imageUrl && !failed) {
+				const open = function (event) { event.stopPropagation(); openSceneImagePreview(props.imageUrl, event.currentTarget, null, null, null, name ? name + "的头像" : "头像"); };
+				return React.createElement("img", { className: "dsh-tavern-cast-avatar is-zoomable", src: props.imageUrl, alt: "", loading: "lazy", role: "button", tabIndex: 0, "aria-label": "放大" + (name ? name + "的" : "") + "头像", title: "点击放大",
+					onClick: open, onKeyDown: function (event) { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(event); } }, onError: function () { setFailed(true); } });
+			}
 			return React.createElement("span", { className: "dsh-tavern-cast-avatar dsh-tavern-cast-avatar-letter", "aria-hidden": true, style: { "--dsh-cast-hue": tavernCastHue(name) } }, Array.from(name)[0] || "?");
 		}
 
 		function TavernCastSpeak(props) {
 			const speech = useTavernSpeechSettings();
 			return speech && speech.enabled ? React.createElement(TavernSpeakButton, props) : null;
+		}
+
+		// The picture beside a line: the speaker's avatar for its emotion, that emotion's sprite, their avatar, the card image.
+		function tavernCastLineAvatar(cast, name, emotion) {
+			const character = tavernCastCharacter(cast.characters, name);
+			const avatars = character && character.avatars || {}, sprites = character && character.sprites || {};
+			return avatars[emotion] || sprites[emotion] || character && character.avatarUrl || (cast.characterName && name === cast.characterName ? cast.characterImageUrl : "");
 		}
 
 		/** Render text with annotated lines as speaker rows; falls back to the plain renderer. */
@@ -132,9 +149,8 @@
 			const h = React.createElement;
 			return h(React.Fragment, { key: key }, segments.map(function (segment, index) {
 				if (segment.kind === "text") return segment.text.trim() ? renderText(segment.text, index) : null;
-				const own = cast.characterName && segment.speaker === cast.characterName;
 				return h("div", { key: index, className: "dsh-tavern-cast-line" },
-					h(TavernCastAvatar, { speaker: segment.speaker, imageUrl: own ? cast.characterImageUrl : "" }),
+					h(TavernCastAvatar, { speaker: segment.speaker, imageUrl: tavernCastLineAvatar(cast, segment.speaker, segment.emotion) }),
 					h("div", { className: "dsh-tavern-cast-body" },
 						h("div", { className: "dsh-tavern-cast-head" },
 							h("span", { className: "dsh-tavern-cast-name", style: { "--dsh-cast-hue": tavernCastHue(segment.speaker) } }, segment.speaker),

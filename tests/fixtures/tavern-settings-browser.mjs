@@ -4,7 +4,7 @@ import { chromium } from 'playwright'
 
 // Exercise the public plugin registration and real React effects/events. Only
 // the DSH host and HTTP boundary are fixtures; no component source extraction.
-export async function openTavernSettings(t, { settings, respond, sceneImages = true } = {}) {
+export async function openTavernSettings(t, { settings, respond, sceneImages = true, section: pageSection } = {}) {
   const browser = await chromium.launch({ headless: true })
   t.after(() => browser.close())
   const page = await browser.newPage()
@@ -40,7 +40,7 @@ export async function openTavernSettings(t, { settings, respond, sceneImages = t
   const source = await readFile(new URL('../../tavern-plugin/lib/client.js', import.meta.url), 'utf8')
   await page.addScriptTag({ content: source })
   // Scene image settings live on their own page, registered once the release allows them.
-  const section = sceneImages ? 'dsh-tavern: scene image settings section' : 'dsh-tavern: settings section'
+  const section = pageSection || (sceneImages ? 'dsh-tavern: scene image settings section' : 'dsh-tavern: settings section')
   await page.evaluate(async section => {
     let Settings
     window.client.apply({

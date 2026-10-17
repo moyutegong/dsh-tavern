@@ -19,10 +19,10 @@ export function createCastPresentation({ enabled, turns, data, publish = () => {
     tools: () => [CAST_SUBMIT_TOOL],
     has: name => name === CAST_SUBMIT_TOOL_NAME,
     /** Whether settlement must run for this game even with posture and variables off. */
-    wanted: async () => await enabled() === true,
+    wanted: async ({ gameId } = {}) => await enabled(gameId) === true,
     async section({ gameId, turn }) {
       pending.delete(keyOf(gameId, turn))
-      if (await enabled() !== true) return ''
+      if (await enabled(gameId) !== true) return ''
       const material = await turns.readPendingTurn(gameId)
       if (!material || material.turn !== turn || material.greeting) return ''
       const quotes = dialogueQuotes(material.text)
@@ -45,7 +45,7 @@ export function createCastPresentation({ enabled, turns, data, publish = () => {
 
   /** Annotations of the shown text versions of some turns; turns without one are left out. */
   async function forTurns(sessionId, wanted) {
-    if (await enabled() !== true) return { enabled: false, turns: {} }
+    if (await enabled(sessionId) !== true) return { enabled: false, turns: {} }
     const game = await turns.resolveGame(sessionId)
     const list = [...new Set((Array.isArray(wanted) ? wanted : []).map(Number).filter(turn => Number.isSafeInteger(turn) && turn > 0))].slice(0, 100)
     if (!game || !list.length) return { enabled: true, turns: {} }

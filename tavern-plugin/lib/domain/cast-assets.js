@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import { CAST_EMOTIONS } from './cast-annotation.js'
 import { readZipEntries } from './zip-entries.js'
-import { emotionSlot as emotionSlotOf } from './card-assets.js'
+import { emotionRank, emotionSlot as emotionSlotOf } from './card-assets.js'
 
 // Per-card character material (docs/design/cast-presentation.md): avatar and expression sprites
 // per character, laid out like a SillyTavern sprite pack so such packs import as they are.
@@ -199,7 +199,9 @@ export function createCastAssets({ store }) {
     const sprites = [], backgrounds = [], extras = [], cast = []
     let avatar = null
     const taken = new Set()
-    for (const emotion of collected.emotions) {
+    // The closest name gets each emotion: 'sad' rather than 'crying' for sadness.
+    const ordered = collected.emotions.map((emotion, index) => ({ emotion, index })).sort((left, right) => emotionRank(left.emotion.name) - emotionRank(right.emotion.name) || left.index - right.index).map(item => item.emotion)
+    for (const emotion of ordered) {
       const slot = emotionSlotOf(emotion.name)
       const file = slot && !taken.has(slot) ? await image(emotion.bytes) : null
       if (file) { taken.add(slot); sprites.push({ slot, file }); continue }
@@ -247,6 +249,34 @@ export function createCastAssets({ store }) {
     return summary
   }
 
+  /** The asset packs a card carries (asset-packs.js), by id and content hash; replaces the list. */
+  async function bindPacks(cardPath, packs) {
+    await update(cardPath, manifest => {
+      manifest.packs = packs.map(pack => ({ id: pack.id, contentHash: pack.contentHash, format: pack.format || '', title: pack.title || '', name: pack.name || '' }))
+    })
+    return read(cardPath)
+  }
+
+  /** The plugins a card carries (card-plugins.js) and whether the player turned them on. */
+  async function setPlugins(cardPath, plugins) {
+    await update(cardPath, manifest => {
+      manifest.plugins = plugins.map(plugin => ({ folder: plugin.folder, name: plugin.name, sha256: plugin.sha256, purpose: plugin.purpose || '', files: plugin.files || 0, bytes: plugin.bytes || 0, enabled: plugin.enabled === true }))
+    })
+    return read(cardPath)
+  }
+
+  /** Whether this card's games show the stage (off unless the player or the card turns it on). */
+  async function setStage(cardPath, on) {
+    await update(cardPath, manifest => { if (on) manifest.stage = true; else delete manifest.stage })
+    return read(cardPath)
+  }
+
+  /** What a new game of this card starts with (card-archive.js startDefaults): { presetPath?, settings? }. */
+  async function setStartDefaults(cardPath, defaults) {
+    await update(cardPath, manifest => { if (defaults) manifest.startDefaults = defaults; else delete manifest.startDefaults })
+    return read(cardPath)
+  }
+
   /** Bytes of one of the card's material files, for export. */
   async function readFile(cardPath, file) {
     if (!/^[0-9a-f]{32}\.[a-z0-9]{1,10}$/.test(String(file))) return undefined
@@ -260,5 +290,5 @@ export function createCastAssets({ store }) {
     return bytes ? { bytes, mediaType: IMAGE_TYPES[file.split('.').pop()] } : undefined
   }
 
-  return Object.freeze({ read, movePath, setImage, removeImage, setCharacter, setVoice, removeCharacter, importSpritePack, importCardAssets, readFile, readImage, keyOf: cardPath => hash(String(cardPath)) })
+  return Object.freeze({ read, movePath, setImage, removeImage, setCharacter, setVoice, removeCharacter, importSpritePack, importCardAssets, bindPacks, setPlugins, setStage, setStartDefaults, readFile, readImage, keyOf: cardPath => hash(String(cardPath)) })
 }

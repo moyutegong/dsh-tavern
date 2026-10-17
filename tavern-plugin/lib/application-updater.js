@@ -392,9 +392,15 @@ export function createApplicationUpdater(options) {
     }
     // Status must apply the same stale-lock rule as a new install would; otherwise a
     // lock the installer would reclaim keeps the update button disabled forever.
+    // A reservation is never adopted when the launched updater dies before its first
+    // line of Tavern code; nothing inside it can report that, so say it here.
+    const notAdopted = owner?.state === 'reserved' && owner.launcherPid > 1
     if (owner && installationState.reclaimStaleInstallation(dshHome, owner)) {
       if (current?.phase === 'completed' && current.attemptId === owner.attemptId) return { ...current, ...identity }
-      const interrupted = { phase: 'failed', attemptId: owner.attemptId, repairRequired: true, repairSince: now(), host: await host(), failedAt: now(), error: '上次更新已中断（安装进程均已退出或超过 1 小时无进展），已解除安装锁，可以修复安装。' }
+      if (notAdopted) record('updater.notadopted', { attemptId: owner.attemptId, launcherPid: owner.launcherPid, reservedForMs: now() - (Number(owner.startedAt) || now()) })
+      const interrupted = { phase: 'failed', attemptId: owner.attemptId, repairRequired: true, repairSince: now(), host: await host(), failedAt: now(),
+        error: notAdopted ? '更新进程启动后没有开始安装就退出了，已解除安装锁。可以重试；仍失败时请从外部终端运行安装命令。'
+          : '上次更新已中断（安装进程均已退出或超过 1 小时无进展），已解除安装锁，可以修复安装。' }
       await writeStatus(interrupted, { expectedAttemptId: current?.attemptId })
       return { ...interrupted, ...identity }
     }
@@ -604,7 +610,7 @@ export function createApplicationUpdater(options) {
         cwd: dshHome,
         detached: true,
         windowsHide: true,
-        stdio: platform === 'win32' ? ['ignore', 'ignore', 'pipe'] : 'ignore',
+        stdio: platform === 'win32' ? ['ignore', 'pipe', 'pipe'] : 'ignore',
         env: process.versions.electron
           ? {
               ...launchEnvironment, DSH_HOME: dshHome, ...(installHost === 'cli' ? { DSH_TAVERN_CLI_HOME: dshHome } : {}),
@@ -616,13 +622,19 @@ export function createApplicationUpdater(options) {
               ...(hostDependencyAnchor ? { DSH_TAVERN_HOST_DEPENDENCY_ANCHOR: hostDependencyAnchor } : {}),
             },
       })
+      let launcherPid = Number(child.pid)
       if (typeof child.once === 'function') {
         await new Promise(function (resolve, reject) {
           child.once('spawn', () => { launchObserved = true })
           if (platform === 'win32') {
-            let launchError = ''
+            let launchError = '', launchOutput = ''
+            child.stdout?.on('data', chunk => { launchOutput = (launchOutput + chunk.toString('utf8')).slice(-200) })
             child.stderr?.on('data', chunk => { launchError = (launchError + chunk.toString('utf8')).slice(-6000) })
-            child.once('close', code => code === 0 ? resolve() : reject(new Error(sanitizeUpdateError(launchError.trim() || `Windows 更新器启动失败（退出码 ${code}）`))))
+            child.once('close', code => {
+              // The helper prints the WMI-created updater's PID.
+              launcherPid = Number(launchOutput.trim())
+              code === 0 ? resolve() : reject(new Error(sanitizeUpdateError(launchError.trim() || `Windows 更新器启动失败（退出码 ${code}）`)))
+            })
           } else child.once('spawn', resolve)
           child.once('error', reject)
         })
@@ -635,6 +647,13 @@ export function createApplicationUpdater(options) {
       if (platform !== 'win32' && Number.isInteger(childPid) && childPid > 0) {
         running.pid = childPid
         await writeStatus(value => ({ ...value, pid: childPid }), { attemptId, expectedAttemptId: attemptId, onlyIf: value => value?.phase === 'running' && !value?.supervisorReady })
+      }
+      // An updater that dies before adopting the reservation otherwise leaves a pid:0
+      // lock that only the 1-hour idle limit clears; with its PID, status reclaims it.
+      record('updater.launched', { launcherPid, execPath, electronNode: Boolean(process.versions.electron) })
+      if (Number.isSafeInteger(launcherPid) && launcherPid > 1) {
+        // Already adopted, or the lock is momentarily busy: the idle limit still applies.
+        try { lease.update({ launcherPid }) } catch {}
       }
     } catch (error) {
       if (!launchObserved) {

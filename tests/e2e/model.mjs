@@ -193,6 +193,12 @@ export function apply(ctx) {
         type: 'tool-call', id: 'e2e-cast-' + gold, name: 'cast_submit',
         arguments: JSON.stringify({ lines: [...castNote.matchAll(/^(\d+)\. (.*)$/gm)].map(([, n, quote]) => ({ n: Number(n), speaker: quote.includes('谢谢') ? '你' : '店主', emotion: quote.includes('谢谢') ? 'gratitude' : 'joy' })) })
       })
+      // The 大肥鱼 card plugin (examples/dafeiyu-card): direct the stage from the listed scenes and music.
+      const directorNote = /【舞台导演】[^【]*/.exec(input.messages.flatMap(message => message.content || []).map(block => block.text || '').filter(item => item.includes('【舞台导演】')).at(-1) || '')?.[0]
+      if (tools.has('galgame_direct') && directorNote && !done.has('e2e-direct-' + gold)) blocks.push({
+        type: 'tool-call', id: 'e2e-direct-' + gold, name: 'galgame_direct',
+        arguments: JSON.stringify({ scene: /可选场景（[^）]*）：([^：；\n]+)：/.exec(directorNote)?.[1], time: 'night', outfit: 'claude', music: /音乐（[^）]*）：([^：；\n]+)：/.exec(directorNote)?.[1] })
+      })
       if (tools.has('mvu_submit_update') && !done.has(goldId)) blocks.push({
         type: 'tool-call', id: goldId, name: 'mvu_submit_update',
         arguments: JSON.stringify({ operations: [{ op: 'replace', path: cardUpdate ? '/stat_data/coins' : '/stat_data/gold',

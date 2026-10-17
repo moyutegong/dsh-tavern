@@ -23,6 +23,8 @@
 
 ## 人物卡格式：沿用 CCv3，不另起新格式
 
+> 2026-10-17 更新：新的人物卡可能带程序代码（DSH 插件），因此改为专属格式 `.dshcard`，内部兼容 CHARX，见 [DSH 人物卡格式](dsh-card-format.md)。下面关于 CCv3 素材和 `extensions.dsh_tavern.cast` 的部分仍然有效。
+
 新形态的游戏需要卡里带上演出素材，但不需要一个孤立的新格式。SillyTavern 系的 Character Card V3（`chara_card_v3`）已经留了位置：
 
 - `data.assets`：素材列表，类型有 `icon`（头像）、`background`（背景）、`emotion`（表情立绘）、`user_icon`、`other`，`uri` 可以指向网址或卡包内的文件。

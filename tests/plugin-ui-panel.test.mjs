@@ -10,7 +10,7 @@ const factory = source.slice(start, source.indexOf('const tavernUiExtensions = c
 function load() {
   const context = {
     React: { createElement: (type, props, ...children) => ({ type, props, children }) },
-    tavernPluginBoundary: () => 'Boundary'
+    tavernPluginBoundary: () => 'Boundary', tavernPluginAllowed: () => true
   }
   return vm.runInNewContext(factory + '; createTavernUiExtensions()', context)
 }
@@ -67,7 +67,7 @@ test('开始页分组：插件声明的分组排在 Tavern 自带分组之后，
 function loadWith(extra) {
   const context = {
     React: { createElement: (type, props, ...children) => ({ type, props, children }) },
-    tavernPluginBoundary: () => 'Boundary', tavernErrorHub: { report() {} }, ...extra
+    tavernPluginBoundary: () => 'Boundary', tavernPluginAllowed: () => true, tavernErrorHub: { report() {} }, ...extra
   }
   return vm.runInNewContext(factory + '; createTavernUiExtensions()', context)
 }
@@ -217,25 +217,43 @@ test('人物卡列表视图：插件视图拿到筛选后的卡片和动作，�
   dispose()
   tree = List(props('library'))
   assert.deepEqual(tree.children[0].children.map(button => button.children[0]), ['列表', '宫格'])
+  assert.equal(tree.children[0].props.className, 'dsh-tavern-card-view-switch dsh-tavern-segmented')
   assert.equal(tree.children[1], 'builtin')
 
   // Tavern's own grid: covers and names; a broken card cannot start a game; corner holds @ and ⋯.
   stored.set('dsh-tavern-card-list-view', 'dsh-tavern:grid')
   managing = false
-  const gridOf = place => { const t = List(props(place)).children[1].children[0]; return t.type(t.props) }
-  let grid = gridOf('library')
-  assert.equal(grid.props.className, 'dsh-tavern-card-grid')
+  // The grid view is a component: render it once more to get its toolbar and grid.
+  const viewOf = place => { const body = List(props(place)).children[1].children[0]; const element = body.type(body.props); return element.type(element.props) }
+  let view = viewOf('library')
+  let [toolbar, grid] = view.children
+  assert.equal(grid.props.className, 'dsh-tavern-card-grid', '人物卡库默认 4 列')
+  assert.equal(grid.props.style['--dsh-tavern-card-grid-cols'], '4')
+  const columns = toolbar.children[1].children
+  assert.deepEqual(columns.map(button => button.props['aria-pressed']), [false, false, true, false, false])
+  assert.equal(toolbar.children[2].children[0], '2 张')
   const [first, second] = grid.children
   const open = first.children[0]
   assert.equal(open.children[0].props.src, '/api/dsh-tavern/card-image?path=' + encodeURIComponent('cards/甲.png'))
-  assert.equal(open.children[1].children[0], '甲')
+  const copy = open.children[1].children
+  assert.equal(copy.length, 1, '卡片上只显示名字')
+  assert.equal(copy[0].children[0], '甲')
+  assert.equal(open.props.title, '甲\n文件：甲.png\n剧本：剧本一', '文件名和剧本在悬停提示里')
+  assert.equal(second.children[0].props.title, '坏了', '坏卡的提示是错误原因')
   assert.equal(second.children[0].children[0].children[0], '乙')
   assert.deepEqual(first.children[2].children, ['@甲', 'menu:甲'])
   open.props.onClick()
   assert.deepEqual(opened.slice(-1), ['cards/甲.png'])
-  grid = gridOf('play')
+  columns[1].props.onClick()
+  assert.equal(stored.get('dsh-tavern-card-grid-cols-library'), '3', '列数按位置记住')
+  view = viewOf('play')
+  ;[toolbar, grid] = view.children
+  assert.equal(grid.props.className, 'dsh-tavern-card-grid dense', '开始游玩默认 6 列，名字更紧凑')
   assert.equal(grid.children[1].children[0].props.disabled, true)
   assert.equal(grid.children[0].children[2], null)
+  stored.set('tavern-card-grid-cols-play', '5')
+  stored.delete('dsh-tavern-card-grid-cols-play')
+  assert.equal(viewOf('play').children[1].props.style['--dsh-tavern-card-grid-cols'], '5', '沿用插件原来记住的列数')
 })
 
  test('回合订阅忽略迟到的旧响应，卸载后不再通知', async () => {
@@ -280,7 +298,7 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   const stored = new Map()
   const stage = vm.runInNewContext(code + '; ({ useTavernStageView, TavernStageSceneView, TavernStageViewSwitch })', {
     React: { createElement: h, useState: init => [typeof init === 'function' ? init() : init, () => {}] },
-    useTavernUiExtensions() {}, tavernUiExtensions: ui, tavernPluginBoundary: () => 'Boundary', TavernStageScene: 'Builtin',
+    useTavernUiExtensions() {}, useTavernCardPluginScopes() { return {} }, tavernPluginAllowed: () => true, tavernUiExtensions: ui, tavernPluginBoundary: () => 'Boundary', TavernStageScene: 'Builtin',
     window: { localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) } }
   })
   let choice = stage.useTavernStageView()
@@ -310,4 +328,37 @@ test('舞台视图：插件注册后默认用它，拿到舞台数据与当前�
   choice = stage.useTavernStageView()
   assert.equal(choice.view, null)
   assert.equal(stage.TavernStageViewSwitch({ choice }), null, '没有插件视图时不显示切换')
+})
+
+test('背景音乐：同一首接着放、换曲淡入；玩家的开关记在浏览器里，关掉时不出声；插件经 playMusic 交给 Tavern', async () => {
+  const start = source.indexOf('const TAVERN_MUSIC_KEY')
+  const code = source.slice(start, source.indexOf('function useTavernMusic(', start))
+  const stored = new Map(), created = []
+  class Audio { constructor(url) { this.url = url; this.volume = 1; this.paused = true; created.push(this) } play() { this.paused = false; return Promise.resolve() } pause() { this.paused = true } }
+  const music = vm.runInNewContext(code + '; tavernMusic', { Audio, setTimeout: fn => fn(), window: { localStorage: { getItem: key => stored.get(key) ?? null, setItem: (key, value) => stored.set(key, value) } } })
+  const flush = () => new Promise(resolve => setImmediate(resolve))
+  music.play('a.mp3', { title: '主题' })
+  music.play('a.mp3', { title: '主题' })
+  await flush()
+  assert.equal(created.length, 1, '同一首不重新开始')
+  assert.equal(created[0].volume, 0.45)
+  assert.equal(music.get().track.title, '主题')
+  music.setEnabled(false)
+  assert.equal(created[0].paused, true)
+  assert.equal(stored.get('dsh-tavern-music-enabled'), 'off')
+  music.play('b.mp3')
+  assert.equal(created.length, 1, '关着时换曲也不出声')
+  music.setEnabled(true)
+  await flush()
+  assert.equal(created[1].url, 'b.mp3')
+  music.stop()
+  assert.equal(created[1].paused, true)
+  assert.equal(music.get().track, null)
+
+  const calls = []
+  const ui = loadWith({ tavernMusic: { play: (url, options) => calls.push([url, options]), stop: () => calls.push(['stop']) } })
+  ui.service.playMusic({ url: 'c.mp3', title: '夜' })
+  ui.service.playMusic('')
+  ui.service.stopMusic()
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['c.mp3', { title: '夜' }], ['', null], ['stop']])
 })

@@ -891,6 +891,34 @@ test('台词标注与角色素材：插件读取某轮当前版本的标注和�
   assert.equal(seen.length, 1)
 })
 
+test('角色素材来源：插件交出的人物经校验后并入本局角色素材；坏来源记入插件错误，关闭的插件不提供', { skip: !cordis }, async t => {
+  let disabled = []
+  const h = await harness(t, { data: { readSettings: async () => ({ disabled }), updateSettings: async () => {} } })
+  const seen = []
+  const fiber = await h.root.plugin({ name: 'card-figure', inject: ['tavern'], apply(ctx) {
+    ctx.tavern.castAssetSource({ name: 'figure', characters: async context => { seen.push(context); return [
+      { name: ' 大肥鱼 ', aliases: ['肥鱼', 3], avatarUrl: '/calm', avatars: { joy: '/joy', shy: 'javascript:alert(1)' }, sprites: { joy: 'https://x/joy.png' } },
+      { name: '' },
+    ] } })
+    ctx.tavern.castAssetSource({ name: 'broken', characters: async () => { throw new Error('读不到素材包') } })
+    assert.throws(() => ctx.tavern.castAssetSource({ name: 'figure', characters: () => [] }), /已注册/)
+    assert.throws(() => ctx.tavern.castAssetSource({ name: 'x' }), /characters 必须是函数/)
+  } })
+  await tick()
+  assert.deepEqual(await h.api.castAssetSources({ gameId: 'game-1' }), [
+    { name: '大肥鱼', aliases: ['肥鱼'], avatarUrl: '/calm', avatars: { joy: '/joy' }, sprites: { joy: 'https://x/joy.png' }, plugin: 'card-figure' }])
+  assert.deepEqual(seen, [{ gameId: 'game-1' }])
+  const panel = await h.api.gamePlugins('game-1')
+  assert.deepEqual(panel.plugins[0].uses, [{ stage: '演出', mode: '添加' }])
+  assert.match(panel.errors[0].message, /读不到素材包/)
+  disabled = ['card-figure']
+  assert.deepEqual(await h.api.castAssetSources({ gameId: 'game-1' }), [])
+  disabled = []
+  fiber.dispose()
+  await tick()
+  assert.deepEqual(await h.api.castAssetSources({ gameId: 'game-1' }), [])
+})
+
 test('配音渠道：插件注册的渠道带上归属，合成超时或出错记入插件错误；synthesizeSpeech 按本局人物声音合成', { skip: !cordis }, async t => {
   const lines = []
   const h = await harness(t, { synthesizeSpeech: async (sessionId, line) => { lines.push([sessionId, line]); return line.narration ? { skip: true } : { url: '/api/dsh-tavern/speech-audio?id=x.mp3', mediaType: 'audio/mpeg' } } })
@@ -915,4 +943,73 @@ test('配音渠道：插件注册的渠道带上归属，合成超时或出错�
   assert.deepEqual(lines[0], ['game-1', { speaker: '林曦', text: '你好', emotion: 'joy', narration: false }])
   assert.equal(await tavern.synthesizeSpeech({ gameId: 'game-1', text: '夜深了。', narration: true }), null)
   await assert.rejects(tavern.synthesizeSpeech({ gameId: 'game-1', text: ' ' }), /text/)
+})
+
+test('卡内插件只在所属人物卡的局里出现：回调不触发、调用被拒、人物卡列表只剩本卡、本局插件面板不列出', { skip: !cordis }, async t => {
+  let cardOfGame = 'cards/other.json'
+  const settled = []
+  const h = await harness(t, {
+    data: createPluginData({ store: memoryStore() }),
+    cardScope: async () => new Map([['fish-plugin', { cardPath: 'cards/fish.json', folder: 'card-x-fish' }]]),
+    cardPathOf: async () => cardOfGame,
+    listCards: async () => [{ path: 'cards/fish.json', name: '鱼' }, { path: 'cards/other.json', name: '别的' }],
+    readCardRaw: async () => ({ data: {} })
+  })
+  let tavern
+  await h.root.plugin({ name: 'fish-plugin', inject: ['tavern'], apply(ctx) { tavern = ctx.tavern; ctx.tavern.onTurnSettled(turn => settled.push(turn.turn)); ctx.tavern.promptSection({ name: 'fish', text: '鱼的规则' }) } })
+  await tick()
+  await h.api.turnSettled('game-1')
+  await tick()
+  assert.deepEqual(settled, [], '别的卡的局不通知')
+  assert.deepEqual(await h.api.promptSections({ gameId: 'game-1' }), [])
+  await assert.rejects(tavern.getTurn({ gameId: 'game-1', turn: 3 }), /只能用于它所在的人物卡/)
+  await assert.rejects(tavern.readCardRaw({ card: 'cards/other.json' }), /只能用于它所在的人物卡/)
+  assert.deepEqual((await tavern.listCards()).map(card => card.id), ['cards/fish.json'])
+  assert.deepEqual((await h.api.gamePlugins('game-1')).plugins, [])
+
+  cardOfGame = 'cards/fish.json'
+  h.setLatest(turnMaterial({ key: 'key-3c' }))
+  await h.api.turnSettled('game-1')
+  await tick()
+  assert.deepEqual(settled, [3], '本卡的局照常通知')
+  assert.equal((await tavern.getTurn({ gameId: 'game-1', turn: 3 })).text, '她推开门。')
+  assert.deepEqual((await h.api.promptSections({ gameId: 'game-1' })).map(item => item.text), ['鱼的规则'])
+  assert.deepEqual((await h.api.gamePlugins('game-1')).plugins, [], '本卡的插件是这一局的一部分，不在插件面板里开关')
+  await assert.rejects(h.api.setGamePlugin('game-1', { name: 'fish-plugin', enabled: false }), /不能在本局单独关闭/)
+  assert.deepEqual((await h.api.promptSections({ gameId: 'game-1' })).map(item => item.text), ['鱼的规则'])
+})
+
+test('本局配置项：插件声明字段，Tavern 画在本局设置并按局保存；不合法的值被拒绝，改动通知插件', { skip: !cordis }, async t => {
+  const changed = [], seen = []
+  const data = createPluginData({ store: memoryStore() })
+  const h = await harness(t, { data, settingsChanged: (gameId, plugin) => changed.push([gameId, plugin]) })
+  let tavern
+  await h.root.plugin({ name: 'director', inject: ['tavern'], apply(ctx) {
+    tavern = ctx.tavern
+    assert.throws(() => ctx.tavern.gameSettings({ fields: [{ key: '1x', type: 'boolean', label: 'x' }] }), /key/)
+    assert.throws(() => ctx.tavern.gameSettings({ fields: [{ key: 'pace', type: 'select', label: '节奏', options: [] }] }), /options/)
+    ctx.tavern.gameSettings({ title: '导演', fields: [
+      { key: 'music', type: 'boolean', label: '自动换音乐', default: true },
+      { key: 'pace', type: 'select', label: '换装频率', options: [{ value: 'low', label: '少' }, { value: 'high', label: '多' }] },
+      { key: 'lines', type: 'number', label: '每幕句数', min: 1, max: 9, default: 3 }
+    ] })
+    assert.throws(() => ctx.tavern.gameSettings({ fields: [{ key: 'x', type: 'text', label: 'x' }] }), /已声明过/)
+    ctx.tavern.onGameSettingsChanged(event => seen.push(event))
+  } })
+  await tick()
+  assert.deepEqual(await tavern.getGameSettings({ gameId: 'game-1' }), { music: true, pace: 'low', lines: 3 }, '没改过时用默认值')
+  const panel = await h.api.gamePlugins('game-1')
+  assert.deepEqual(panel.settings.map(entry => [entry.plugin, entry.title, entry.fields.map(field => field.key)]), [['director', '导演', ['music', 'pace', 'lines']]])
+  await assert.rejects(h.api.setGamePlugin('game-1', { setting: { plugin: 'director', key: 'lines', value: 12 } }), /不符合要求/)
+  await assert.rejects(h.api.setGamePlugin('game-1', { setting: { plugin: 'director', key: 'nope', value: 1 } }), /没有这个插件配置项/)
+  const after = await h.api.setGamePlugin('game-1', { setting: { plugin: 'director', key: 'pace', value: 'high' } })
+  assert.deepEqual(after.settings[0].values, { music: true, pace: 'high', lines: 3 })
+  await tick()
+  assert.deepEqual(seen, [{ gameId: 'game-1', values: { music: true, pace: 'high', lines: 3 } }])
+  assert.deepEqual(changed, [['game-1', 'director']])
+  assert.deepEqual(await tavern.getGameSettings({ gameId: 'game-1' }), { music: true, pace: 'high', lines: 3 })
+  assert.deepEqual(await h.api.pluginGameSettings('game-1', 'director'), { music: true, pace: 'high', lines: 3 }, '页面侧读到同样的值')
+  assert.equal((await data.snapshot('chat-1')).settings.values.director.pace, 'high', '值存在这一局的插件数据里，随分叉和导出带走')
+  await h.api.setGamePlugin('game-1', { name: 'director', enabled: false })
+  assert.deepEqual((await h.api.gamePlugins('game-1')).settings, [], '本局关掉的插件不显示配置项')
 })

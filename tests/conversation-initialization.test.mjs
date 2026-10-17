@@ -178,3 +178,15 @@ test('新游戏复制全局 Skill 开关，本局调整和后续全局修改互�
   const card = await h.make().start({ ...h.input, sessionId: 'card-skills', mode: 'card', cardPath: '' })
   assert.deepEqual(card.disabledWritingSkills, [])
 })
+
+test('DSH 人物卡带的开局默认：新局用卡里的预设和设置，其余沿用玩家的全局默认', async () => {
+  const h = initializationFixture()
+  h.state.startDefaults = { presetPath: 'presets/大肥鱼 · 舞台演出.json', settings: { statusBarPlacement: 'body', backgroundTasks: { posture: false } } }
+  const chat = await h.make().start(h.input)
+  assert.equal(chat.runtimePresetPath, 'presets/大肥鱼 · 舞台演出.json')
+  assert.deepEqual(h.state.presetPaths.at(-1), 'presets/大肥鱼 · 舞台演出.json')
+  assert.equal(chat.statusBarPlacement, 'body')
+  assert.equal(chat.backgroundTasks.posture, false)
+  assert.equal(chat.backgroundTasks.variables, true, '卡没提到的设置沿用全局默认')
+  assert.equal(chat.macroState.userName, '玩家', '玩家称呼不由卡决定')
+})

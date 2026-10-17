@@ -28,8 +28,8 @@ export function createSettlementItems({ items = () => [], plugins = () => null }
     tools() { return [...own().flatMap(item => item.tools()), ...(plugins()?.tools() || [])] },
     has(name) { return own().some(item => item.has(name)) || Boolean(plugins()?.has(name)) },
     /** Whether an item needs the settlement to run although posture and variables are off. */
-    async wanted() {
-      for (const item of own()) if (typeof item.wanted === 'function' && await item.wanted()) return true
+    async wanted(context = {}) {
+      for (const item of own()) if (typeof item.wanted === 'function' && await item.wanted(context)) return true
       return false
     },
     /** One settlement run's dispatcher; plugin tools are refused once the run has submitted. */

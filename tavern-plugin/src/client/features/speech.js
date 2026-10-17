@@ -108,7 +108,7 @@
 			return React.createElement("datalist", { id: props.id }, voices.map(function (voice) { return React.createElement("option", { key: voice, value: voice }); }));
 		}
 
-		// Settings → DSH Tavern → 显示与交互 → 配音.
+		// Settings → 配音, its own page like 场景生图.
 		function TavernSpeechSettings() {
 			const h = React.createElement;
 			const settings = useTavernSpeechSettings();
@@ -149,32 +149,38 @@
 				finally { setBusy(false); }
 			}
 			function field(name, label, placeholder, list) {
-				return h("label", { key: name, className: "dsh-tavern-speech-field" }, h("span", null, label),
+				return h("label", { key: name }, label,
 					h("input", { value: draft[name] || "", placeholder: placeholder || "", list: list, disabled: busy, "aria-label": label,
 						onChange: function (event) { const value = event.target.value; setDraft(function (current) { return Object.assign({}, current, { [name]: value }); }); } }));
 			}
-			return h("section", { className: "dsh-tavern-settings-group dsh-tavern-speech-settings" },
-				h("label", { className: "dsh-tavern-settings-row dsh-tavern-background-task" },
-					h("span", { className: "dsh-tavern-settings-copy" }, h("strong", null, "配音"),
-						h("p", { className: "dsh-tavern-settings-desc" }, "台词行和舞台上可以朗读台词，每个人物用自己的声音；需要先打开「对话头像」，后台才会标注说话人。")),
-					h("input", { type: "checkbox", role: "switch", "aria-label": "配音", checked: settings.enabled, disabled: busy, onChange: function (event) { void save(event.target.checked); } })),
-				h("div", { className: "dsh-tavern-speech-form" },
-					h("label", { className: "dsh-tavern-speech-field" }, h("span", null, "配音渠道"),
-						h("select", { value: chosen, disabled: busy, "aria-label": "配音渠道", onChange: function (event) { pick(event.target.value); } },
-							providers.map(function (item) { return h("option", { key: item.id, value: item.id }, item.label + (item.owner ? "（插件 " + item.owner + "）" : "")); }))),
-					provider && provider.description ? h("p", { className: "dsh-tavern-settings-desc" }, provider.description) : null,
-					provider ? provider.fields.map(function (item) { return field(item.name, item.label, item.placeholder); }) : null,
-					provider && provider.key ? h("label", { className: "dsh-tavern-speech-field" }, h("span", null, "API Key"),
-						h("input", { type: "password", value: apiKey, autoComplete: "off", disabled: busy, "aria-label": "API Key", placeholder: provider.hasKey ? "已保存，留空不改" : "",
-							onChange: function (event) { setApiKey(event.target.value); } })) : null,
-					field("voice", "默认声音", provider && provider.browser ? "留空用系统默认中文语音" : "", "dsh-tavern-speech-voices"),
-					field("narratorVoice", "旁白声音", "留空则旁白不念", "dsh-tavern-speech-voices"),
-					h(TavernVoiceOptions, { id: "dsh-tavern-speech-voices", provider: provider }),
-					h("p", { className: "dsh-tavern-settings-desc" }, "每个人物的声音在舞台页的「角色素材」里单独选，没选的用默认声音。"),
-					h("div", { className: "dsh-tavern-speech-actions" },
+			function section(title, hint) {
+				return h.apply(null, ["section", { className: "dsh-tavern-image-section", "aria-label": title }, h("h4", null, title), hint ? h("p", { className: "dsh-tavern-image-hint" }, hint) : null].concat(Array.prototype.slice.call(arguments, 2)));
+			}
+			return h("div", { className: "dsh-tavern-settings-group dsh-tavern-speech-settings" },
+				h("label", { className: "dsh-tavern-background-task" },
+					h("span", null, "开启配音", h("span", { className: "dsh-tavern-settings-desc" }, settings.enabled
+						? "台词行和舞台上可以朗读台词，每个人物用自己的声音。"
+						: "开启后，台词行和舞台上可以朗读台词。需要先打开「对话头像」，后台才会标注说话人。")),
+					h("input", { type: "checkbox", role: "switch", "aria-label": "开启配音", checked: settings.enabled, disabled: busy, onChange: function (event) { void save(event.target.checked); } })),
+				h("h3", { className: "dsh-tavern-image-settings-title" }, "配音配置（全局共用）"),
+				h("div", { className: "dsh-tavern-image-settings" },
+					h("p", { className: "dsh-tavern-settings-intro" }, "浏览器朗读不用配置、不花钱；在线配音渠道按字数计费，试听也会产生少量费用。"),
+					section("渠道", provider ? provider.description : "",
+						h("label", null, "配音渠道",
+							h("select", { value: chosen, disabled: busy, "aria-label": "配音渠道", onChange: function (event) { pick(event.target.value); } },
+								providers.map(function (item) { return h("option", { key: item.id, value: item.id }, item.label + (item.owner ? "（插件 " + item.owner + "）" : "")); }))),
+						provider ? provider.fields.map(function (item) { return field(item.name, item.label, item.placeholder); }) : null,
+						provider && provider.key ? h("label", null, "API Key" + (provider.hasKey ? "（已保存，留空沿用）" : ""),
+							h("input", { type: "password", value: apiKey, autoComplete: "new-password", disabled: busy, "aria-label": "API Key",
+								onChange: function (event) { setApiKey(event.target.value); } })) : null),
+					section("声音", "每个人物的声音在酒馆状态 → 舞台 →「角色素材」里单独选，没选的用默认声音。",
+						field("voice", "默认声音", provider && provider.browser ? "留空用系统默认中文语音" : "", "dsh-tavern-speech-voices"),
+						field("narratorVoice", "旁白声音", "留空则旁白不念", "dsh-tavern-speech-voices"),
+						h(TavernVoiceOptions, { id: "dsh-tavern-speech-voices", provider: provider })),
+					h("div", { className: "dsh-tavern-image-actions" },
 						h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void save(settings.enabled); } }, "保存"),
-						h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void listen(); } }, "试听"))),
-				message ? h("div", { className: "dsh-tavern-settings-row", role: "status" }, h("span", { className: "dsh-tavern-settings-desc" }, message)) : null);
+						h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { void listen(); } }, "试听"),
+						message ? h("span", { role: "status" }, message) : null)));
 		}
 
 		/** A character's voice on the channel in use, in the character material list. */

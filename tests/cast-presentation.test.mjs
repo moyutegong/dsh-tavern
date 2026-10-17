@@ -142,3 +142,11 @@ test('导入 ST 立绘包：单人按文件名、多人按文件夹，非情绪�
   assert.deepEqual(Object.keys(result.cast.characters.find(item => item.name === '林曦').sprites).sort(), ['joy', 'sadness'])
   await assert.rejects(assets.importSpritePack({ cardPath: 'c', name: '林曦', bytes: writeZipEntries([['a.txt', Buffer.from('x')]]) }), /按情绪命名/)
 })
+
+test('台词标注按局开启：全局开关关着时，带自己插件的卡（DSH 人物卡）照样标注', async () => {
+  const seen = []
+  const cast = createCastPresentation({ enabled: async gameId => { seen.push(gameId); return gameId === 'game' }, turns: { resolveGame: async () => null }, data: {}, publish() {} })
+  assert.equal(await cast.settlement.wanted({ gameId: 'game' }), true)
+  assert.equal(await cast.settlement.wanted({ gameId: 'other' }), false)
+  assert.deepEqual(seen, ['game', 'other'])
+})

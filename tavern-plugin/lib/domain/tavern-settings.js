@@ -60,6 +60,10 @@ export function applyTavernSettingsPatch(current, patch) {
     if (typeof input.storyToolCall !== 'boolean') throw new Error('正文走工具调用设置必须是布尔值')
     next.storyToolCall = input.storyToolCall
   }
+  if (Object.hasOwn(input, 'autoOpenStatusPanel')) {
+    if (typeof input.autoOpenStatusPanel !== 'boolean') throw new Error('自动打开酒馆状态面板设置必须是布尔值')
+    next.autoOpenStatusPanel = input.autoOpenStatusPanel
+  }
   if (Object.hasOwn(input, 'castPresentation')) {
     if (typeof input.castPresentation !== 'boolean') throw new Error('对话头像设置必须是布尔值')
     next.castPresentation = input.castPresentation
@@ -136,6 +140,7 @@ export function presentTavernSettings(document, defaults) {
     candidateDismissMode: object(document).candidateDismissMode === 'after-fill' ? 'after-fill' : 'after-send',
     storyToolCall: object(document).storyToolCall === true,
     castPresentation: object(document).castPresentation === true,
+    autoOpenStatusPanel: object(document).autoOpenStatusPanel !== false,
     compatibilityMode: false,
     sillyModeEnabled: false,
     webSearchEnabled: object(document).webSearchEnabled === true,
