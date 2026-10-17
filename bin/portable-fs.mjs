@@ -8,27 +8,43 @@ import path from 'node:path'
 
 const sleep = milliseconds => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds)
 
+// libuv reports reparse-point targets carrying a Win32 namespace prefix.
+const WINDOWS_NAMESPACE = /^(?:\\\\\?\\|\?\?\\|\/\/\?\/)/
+
+// A junction must name an absolute local path, and libuv resolves a relative
+// target against the current working directory rather than the directory
+// holding the link (pnpm's `link:` dependencies are relative), so resolve the
+// target against the link's own directory first.
+export function junctionTarget(linkDirectory, target) {
+  return path.resolve(linkDirectory, target.replace(WINDOWS_NAMESPACE, ''))
+}
+
+// A file link has no unprivileged Windows equivalent, so keep the actionable
+// hint instead of a bare EPERM.
+function createFileLink(target, to) {
+  try {
+    symlinkSync(target, to)
+  } catch (error) {
+    if (process.platform !== 'win32' || (error.code !== 'EPERM' && error.code !== 'EACCES')) throw error
+    throw new Error('无法创建文件符号链接：Windows 需要管理员权限，或系统已开启“开发者模式”。'
+      + `\n  链接：${to}`
+      + `\n  目标：${target}`
+      + '\n请以管理员身份重新运行安装/更新命令，或在“设置 → 系统 → 开发者选项”中开启开发者模式后重试。', { cause: error })
+  }
+}
+
 export function copyTreeSync(from, to, { dereference = false } = {}) {
   const stat = dereference ? statSync(from) : lstatSync(from)
   if (stat.isSymbolicLink()) {
     const target = readlinkSync(from)
     const directoryLink = process.platform === 'win32' && statSync(from, { throwIfNoEntry: false })?.isDirectory()
-    try {
-      symlinkSync(target, to, directoryLink ? 'dir' : undefined)
-    } catch (error) {
-      // Windows needs SeCreateSymbolicLinkPrivilege (an elevated process) or
-      // Developer Mode to create a symbolic link, and a bare EPERM tells the
-      // user nothing. Linkers that instantiate junctions (pnpm, the profile
-      // switch in desktop-profile-installation) never hit this, so it is not a
-      // platform-support problem worth blaming on the package.
-      if (directoryLink && (error.code === 'EPERM' || error.code === 'EACCES')) {
-        throw new Error('无法创建目录符号链接：Windows 需要管理员权限，或系统已开启“开发者模式”。'
-          + `\n  链接：${to}`
-          + `\n  目标：${target}`
-          + '\n请以管理员身份重新运行安装/更新命令，或在“设置 → 系统 → 开发者选项”中开启开发者模式后重试。', { cause: error })
-      }
-      throw error
-    }
+    // Windows lets only an elevated process (or Developer Mode) create a
+    // directory symbolic link, but any process may create the equivalent
+    // junction, and everything downstream treats the two alike: lstat reports
+    // a link, readlink reports the target, removeTreeSync removes both with its
+    // rmdir fallback, and the profile switch already installs junctions.
+    if (directoryLink) symlinkSync(junctionTarget(path.dirname(from), target), to, 'junction')
+    else createFileLink(target, to)
   } else if (stat.isDirectory()) {
     mkdirSync(to, { recursive: true })
     for (const name of readdirSync(from)) copyTreeSync(path.join(from, name), path.join(to, name), { dereference })
