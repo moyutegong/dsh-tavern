@@ -21,6 +21,19 @@ test('发布失败恢复原目录或原链接',t=>{const r=fixture(t);const rena
 test('目标配置无效时不改入口；不允许越出 profiles 目录',t=>{const r=fixture(t);writeFileSync(join(r.targetDir,'package.json'),'{}');assert.throws(()=>switchProfile({...r,mode:'link'}),/bundle/);assert.throws(()=>switchProfile({...r,mode:'link',targetDir:tmpdir()}),/独立 profile/);assert.ok(existsSync(join(r.liveDir,'package.json')))})
 test('仍有进程时超时退出，不发送结束进程信号',async()=>{await assert.rejects(waitForExit([22],{timeout:0,alive:()=>true}),/超时/);await waitForExit([22],{alive:()=>false})})
 
+test('目录被占用时退避重试，成功后才切换',t=>{
+ const r=fixture(t);let busy=2;const waits=[]
+ const rename=(a,b)=>{if(busy>0){busy--;throw Object.assign(new Error('EBUSY: resource busy or locked'),{code:'EBUSY'})}renameSync(a,b)}
+ switchProfile({...r,mode:'link'},{rename,sleep:ms=>waits.push(ms)})
+ assert.equal(realpathSync(r.liveDir),realpathSync(r.targetDir));assert.deepEqual(waits,[200,400])
+})
+test('非占用类失败立即抛出，不重试',t=>{
+ const r=fixture(t)
+ const rename=()=>{throw Object.assign(new Error('mock EEXIST'),{code:'EEXIST'})}
+ assert.throws(()=>switchProfile({...r,mode:'link'},{rename,sleep:()=>{throw new Error('不应重试')}}),/EEXIST/)
+ assert.ok(existsSync(join(r.liveDir,'package.json')))
+})
+
 
 test('桥接安装更新始终写 tavern，不取决于 desktop 当前是否是链接', async t => {
  const { installedProfile } = await import('../bin/launcher-environment.mjs')

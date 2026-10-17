@@ -10,8 +10,37 @@ function manifest(dir) {
 }
 const present = path => { try { lstatSync(path); return true } catch (e) { if (e.code === 'ENOENT') return false; throw e } }
 
+/** Windows reports these while another process still holds the directory tree. */
+const LOCK_ERROR_CODES = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY'])
+
+/** Block the thread without spinning; the helper process has nothing else to run. */
+function sleepSync(ms) { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) }
+
+/**
+ * Rename a directory, retrying while the OS still reports it as locked.
+ *
+ * The Desktop app keeps the profile tree open until its last process is gone and
+ * the shutdown flush has landed, so a single rename right after `waitForExit`
+ * races the release and fails with EBUSY on Windows.
+ * @param {string} from - current path.
+ * @param {string} to - target path.
+ * @param {{ rename?: Function, sleep?: Function, attempts?: number, log?: Function }} [options] - injectable seams.
+ */
+export function renameWithRetry(from, to, { rename = renameSync, sleep = sleepSync, attempts = 60, log } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { return rename(from, to) } catch (error) {
+      if (!LOCK_ERROR_CODES.has(error?.code) || attempt >= attempts) throw error
+      const wait = Math.min(1000, 200 * attempt)
+      log?.('目录仍被占用（' + error.code + '），' + wait + 'ms 后重试（' + attempt + '/' + (attempts - 1) + '）')
+      sleep(wait)
+    }
+  }
+}
+
 // The caller must own the operation lock and have waited for Desktop and its Host to exit.
-export function switchProfile({ mode, profilesRoot, liveDir, targetDir, stamp }, { rename = renameSync, link = symlinkSync } = {}) {
+export function switchProfile({ mode, profilesRoot, liveDir, targetDir, stamp }, { rename = renameSync, link = symlinkSync, sleep, retries = 60, log } = {}) {
+  /** The two directory renames below are the lock-prone steps; see renameWithRetry. */
+  const move = (from, to) => renameWithRetry(from, to, { rename, sleep, attempts: retries, log })
   const root = realpathSync(profilesRoot)
   if (resolve(liveDir) !== join(resolve(profilesRoot), 'desktop')) throw new Error('只允许切换 desktop 入口')
   const linked = present(liveDir) && lstatSync(liveDir).isSymbolicLink()
@@ -34,9 +63,9 @@ export function switchProfile({ mode, profilesRoot, liveDir, targetDir, stamp },
   if (mode === 'link') link(destination, staged, process.platform === 'win32' ? 'junction' : 'dir')
   let moved = false
   try {
-    rename(liveDir, previous)
+    move(liveDir, previous)
     moved = true
-    rename(mode === 'link' ? staged : destination, liveDir)
+    move(mode === 'link' ? staged : destination, liveDir)
   } catch (error) {
     if (moved) {
       try { rename(previous, liveDir) } catch (rollback) { throw new Error(`切换失败且自动恢复失败；原入口保存在 ${previous}：${rollback.message}`, { cause: error }) }
